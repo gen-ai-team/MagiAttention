@@ -40,8 +40,27 @@ PACKAGE_NAME = "magi_attention"
 exe_extension = sysconfig.get_config_var("EXE")
 USER_HOME = os.getenv("MAGI_ATTENTION_HOME")
 
-# For CUDA13.0: the cccl header path needs to be explicitly included
-CUDA13_CCCL_PATH = "/usr/local/cuda-13.0/include/cccl/"
+# CCCL (C++ Core Compute Libraries): path to cuda/std/* headers (e.g. cuda/std/utility).
+# Required for CUTLASS. Prefer CUDA_HOME if available, else fallback to common locations.
+def _get_cccl_include_path():
+    candidates = []
+    if CUDA_HOME is not None:
+        candidates.append(os.path.join(CUDA_HOME, "include", "cccl"))
+    candidates.extend([
+        "/usr/local/cuda/include/cccl",
+        "/usr/local/cuda-13.1/include/cccl",
+        "/usr/local/cuda-13.0/include/cccl",
+    ])
+    for path in candidates:
+        if path and os.path.isdir(path):
+            # sanity check: must contain cuda/std (e.g. cuda/std/utility)
+            cuda_std = os.path.join(path, "cuda", "std")
+            if os.path.isdir(cuda_std):
+                return os.path.abspath(path)
+    return candidates[0] if candidates else "/usr/local/cuda/include/cccl"
+
+CUDA13_CCCL_PATH = _get_cccl_include_path()
+print(f"CUDA13_CCCL_PATH: {CUDA13_CCCL_PATH}")
 
 # For CI: allow forcing C++11 ABI to match NVCR images that use C++11 ABI
 FORCE_CXX11_ABI = os.getenv("MAGI_ATTENTION_FORCE_CXX11_ABI", "0") == "1"
@@ -248,6 +267,7 @@ def build_ffa_utils_ext_module(
         common_dir,
         utils_dir_abs,
         CUDA13_CCCL_PATH,
+        "/home/jovyan/dmikhaylov/experiments/magi/MagiAttention/usr/include/"
     ]
 
     extra_compile_args = {
@@ -458,6 +478,7 @@ def build_magi_attn_comm_module(
         cutlass_dir,
         grpcoll_dir_abs,
         grpcoll_dir_abs / "kernels",
+        "/home/jovyan/dmikhaylov/experiments/magi/MagiAttention/usr/include/"
     ]
 
     # Compiler Flags

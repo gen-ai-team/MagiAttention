@@ -20,12 +20,37 @@ from typing import Any, Literal
 
 import jinja2
 import torch
+from torch.utils.cpp_extension import CUDA_HOME
 
 from magi_attention.common.jit import env as jit_env
 from magi_attention.common.jit.core import JitSpec, gen_jit_spec
 from magi_attention.common.jit.utils import write_if_different
 
 logger = logging.getLogger(__name__)
+
+
+def _get_cccl_include_path() -> str:
+    """
+    CCCL (C++ Core Compute Libraries) provides <cuda/std/...> headers (libcu++).
+    We need the directory that contains `cuda/std`, typically:
+      $CUDA_HOME/include/cccl  or  /usr/local/cuda/include/cccl
+    """
+    candidates: list[str] = []
+    if CUDA_HOME is not None:
+        candidates.append(os.path.join(CUDA_HOME, "include", "cccl"))
+    candidates.extend(
+        [
+            "/usr/local/cuda/include/cccl",
+            "/usr/local/cuda-13.1/include/cccl",
+            "/usr/local/cuda-13.0/include/cccl",
+        ]
+    )
+    for path in candidates:
+        if path and os.path.isdir(path):
+            if os.path.isdir(os.path.join(path, "cuda", "std")):
+                return os.path.abspath(path)
+    # Best-effort fallback (lets the compiler error show actual missing path)
+    return os.path.abspath(candidates[0]) if candidates else "/usr/local/cuda/include/cccl"
 
 # isort: off
 # We need to import the CUDA kernels after importing torch
@@ -361,15 +386,15 @@ def get_ffa_jit_spec(
         jit_env.FLEXIBLE_FLASH_ATTENTION_CSRC_DIR / "flash_bwd_postprocess.cu",
     ]
 
-    # For CUDA13.0: the cccl header path needs to be explicitly included
-    CUDA13_CCCL_PATH = "/usr/local/cuda-13.0/include/cccl/"
+    # CCCL provides headers for <cuda/std/*> (e.g. cuda/std/utility)
+    cccl_include = _get_cccl_include_path()
 
     include_dirs = [
         jit_env.MAGI_ATTENTION_INCLUDE_DIR.resolve(),
         jit_env.FLEXIBLE_FLASH_ATTENTION_CSRC_DIR.resolve(),
         jit_env.CUTLASS_INCLUDE_DIRS[0].resolve(),
         jit_env.CUTLASS_INCLUDE_DIRS[1].resolve(),
-        CUDA13_CCCL_PATH,
+        cccl_include,
     ]
 
     # Disable other head dimensions to reduce compile time
