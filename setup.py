@@ -267,7 +267,7 @@ def build_ffa_utils_ext_module(
         common_dir,
         utils_dir_abs,
         CUDA13_CCCL_PATH,
-        "/home/jovyan/dmikhaylov/experiments/magi/MagiAttention/usr/include/"
+        f"{repo_dir}/usr/include/"
     ]
 
     extra_compile_args = {
@@ -478,7 +478,7 @@ def build_magi_attn_comm_module(
         cutlass_dir,
         grpcoll_dir_abs,
         grpcoll_dir_abs / "kernels",
-        "/home/jovyan/dmikhaylov/experiments/magi/MagiAttention/usr/include/"
+        f"{repo_dir}/usr/include/"
     ]
 
     # Compiler Flags
