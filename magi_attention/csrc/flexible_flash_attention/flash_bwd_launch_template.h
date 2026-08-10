@@ -55,7 +55,7 @@ void run_flash_bwd_pre_process(Flash_bwd_params& params, cudaStream_t stream) {
   typename PreprocessKernel::Arguments preprocess_args{
       // O
       static_cast<Element const*>(params.o_ptr),
-      {params.total_q, params.d, params.h_qo}, // shape_O: [sq, hd, nhq]
+      {params.total_q, params.d_v, params.h_qo}, // shape_O: [sq, hd, nhq]
       {params.o_row_stride, _1{}, params.o_head_stride}, // stride_O: [nhq*hd, 1, hd]
       // dO
       static_cast<Element const*>(params.do_ptr),
@@ -101,6 +101,7 @@ void run_flash_bwd_pre_process(Flash_bwd_params& params, cudaStream_t stream) {
 template <
     int Arch,
     int kHeadDim,
+    int kHeadDimV,
     int kBlockM,
     int kBlockN,
     bool Has_softcap,
@@ -147,7 +148,7 @@ template <
 void run_flash_bwd(Flash_bwd_params& params, cudaStream_t stream) {
   using ElementAccum = float;
   using ArchTag = std::conditional_t<Arch >= 90, cutlass::arch::Sm90, cutlass::arch::Sm80>;
-  using TileShape_MK = cute::Shape<Int<kBlockM>, Int<kHeadDim>>;
+  using TileShape_MK = cute::Shape<Int<kBlockM>, Int<kHeadDimV>>;
 
   // Launch the pre-processing kernel of the ffa backward pass
   BOOL_SWITCH(params.has_sink(), Has_sink, [&] {
@@ -177,6 +178,7 @@ void run_flash_bwd(Flash_bwd_params& params, cudaStream_t stream) {
       Stages_dS,
       ClusterShape,
       TileShape_MNK,
+      kHeadDimV,
       Element,
       ElementAccum,
       cutlass::arch::Sm90,
@@ -241,7 +243,8 @@ void run_flash_bwd(Flash_bwd_params& params, cudaStream_t stream) {
       /*CatGQA=*/CatGQA,
       /*PackGQAFactor=*/PackGQAFactor,
       /*IndexSparse=*/IndexSparse,
-      /*SparseKBlockSize=*/SparseKBlockSize>;
+      /*SparseKBlockSize=*/SparseKBlockSize,
+      /*kHeadDimV=*/kHeadDimV>;
   using AttnKernel = flash::enable_sm90_or_later<
       flash::FlashAttnBwdSm90<CollectiveMainloop, CollectiveEpilogue, Scheduler, RangeMerge, InnerDirMaxToMin, BwdProducerRegs, BwdConsumerRegs>>;
 
@@ -249,20 +252,23 @@ void run_flash_bwd(Flash_bwd_params& params, cudaStream_t stream) {
       static_cast<Element const*>(params.q_ptr),
       static_cast<Element const*>(params.do_ptr),
       static_cast<ElementAccum*>(params.dq_ptr),
-      {params.total_q, Int<kHeadDim>{}, params.h_qo}, // shape_QdOdQ
+      {params.total_q, Int<kHeadDim>{}, params.h_qo}, // shape_QdOdQ (Q/dQ)
+      {params.total_q, Int<kHeadDimV>{}, params.h_qo}, // shape_dO
       {params.q_row_stride, _1{}, Int<kHeadDim>{}}, // stride_Q
-      {params.do_row_stride, _1{}, Int<kHeadDim>{}}, // stride_dO
+      {params.do_row_stride, _1{}, Int<kHeadDimV>{}}, // stride_dO
       {params.dq_row_stride, _1{}, Int<kHeadDim>{}}, // stride_dQ
       static_cast<Element const*>(params.k_ptr),
       static_cast<Element const*>(params.v_ptr),
       static_cast<ElementAccum*>(params.dk_ptr),
       static_cast<ElementAccum*>(params.dv_ptr),
-      {params.total_k, Int<kHeadDim>{}, params.h_kv}, // shape_KVdKdV
-      {params.total_k, Int<kHeadDim>{}, params.h_kv}, // shape_dKdV
+      {params.total_k, Int<kHeadDim>{}, params.h_kv}, // shape_K
+      {params.total_k, Int<kHeadDimV>{}, params.h_kv}, // shape_V
+      {params.total_k, Int<kHeadDim>{}, params.h_kv}, // shape_dK
+      {params.total_k, Int<kHeadDimV>{}, params.h_kv}, // shape_dV
       {params.k_row_stride, _1{}, Int<kHeadDim>{}}, // stride_K
-      {params.v_row_stride, _1{}, Int<kHeadDim>{}}, // stride_V
+      {params.v_row_stride, _1{}, Int<kHeadDimV>{}}, // stride_V
       {params.dk_row_stride, _1{}, Int<kHeadDim>{}}, // stride_dK
-      {params.dv_row_stride, _1{}, Int<kHeadDim>{}}, // stride_dV
+      {params.dv_row_stride, _1{}, Int<kHeadDimV>{}}, // stride_dV
       static_cast<float*>(params.softmax_lse_log2_ptr),
       static_cast<float*>(params.dsoftmax_sum),
       {_4{}, params.total_q_rounded, params.h_qo}, // shape_LSEdPsum
@@ -289,7 +295,7 @@ void run_flash_bwd(Flash_bwd_params& params, cudaStream_t stream) {
       {params.total_k, Int<kHeadDim>{}, params.h_kv}, // shape_dK
       {params.dk_row_stride, _1{}, params.dk_head_stride}, // stride_dK
       static_cast<typename CollectiveEpilogue::ElementDkv*>(params.dv_ptr),
-      {params.total_k, Int<kHeadDim>{}, params.h_kv}, // shape_dV
+      {params.total_k, Int<kHeadDimV>{}, params.h_kv}, // shape_dV
       {params.dv_row_stride, _1{}, params.dv_head_stride}, // stride_dV
       params.h_qo,
       params.h_kv,
@@ -335,7 +341,7 @@ void run_flash_bwd(Flash_bwd_params& params, cudaStream_t stream) {
     if constexpr (ProfileMode)
       MagiEvents::start("bwd_postprocess");
 
-    run_flash_bwd_dkv_postprocess_<ElementDkv, kHeadDim>(params, stream);
+    run_flash_bwd_dkv_postprocess_<ElementDkv, kHeadDim, kHeadDimV>(params, stream);
     CHECK_CUDA_KERNEL_LAUNCH();
     if constexpr (ProfileMode)
       MagiEvents::stop("bwd_postprocess");
@@ -351,6 +357,7 @@ template <
     typename TDq,
     typename TDkv,
     int kHeadDim,
+    int kHeadDimV,
     bool Has_softcap,
     bool OuterStoreNeedReduction,
     bool Deterministic,
@@ -403,8 +410,11 @@ void run_mha_bwd_(Flash_bwd_params& params, cudaStream_t stream) {
   static constexpr bool dQ_swapAB = kHeadDim <= 64 ? false : true;
 
   // NOTE: when BwdInnerLoopK is true, we only support 2 NumConsumerWarpGroups,
-  // since no more named barriers for more groups
-  static constexpr int NumConsumerWarpGroups = BwdInnerLoopK ? 2 : (kHeadDim == 192 ? 3 : 2);
+  // since no more named barriers for more groups.
+  // Symmetric hd192 uses 3 WGs; asymmetric (192,128) stays at 2 because
+  // kHeadDimV=128 is not divisible by 3 (SmemLayoutAtomdO / InnerDv splits).
+  static constexpr int NumConsumerWarpGroups =
+      BwdInnerLoopK ? 2 : ((kHeadDim == 192 && kHeadDimV == 192) ? 3 : 2);
 
   // NOTE: when BwdInnerLoopK is not supported (i.e. always false),
   // all the atom layouts are set specifically for tile size (128, 128, 64) and (64, 128, 64),
@@ -412,9 +422,22 @@ void run_mha_bwd_(Flash_bwd_params& params, cudaStream_t stream) {
   // including (64, 128, 64) and (64, 64, 128),
   // thus the atom layouts are accordingly adjusted here case-by-case,
   // but we need to find a better way to set these layout parameters.
-  static constexpr int AtomLayoutMSdP = kBlockN <= 64 ? 2 : 1;
-  static constexpr int AtomLayoutNdKV = kHeadDim <= 128 ? (kBlockN <= 64 ? 1 : 2) : 1;
+  // Require NumConsumerWarpGroups % AtomLayout* == 0 and head dims divisible by
+  // the complementary split (MdKV = NumConsumer/NdKV) for both kHeadDim and kHeadDimV.
+  // When NumConsumerWarpGroups=3, AtomLayoutMSdP must be 1 (3%2!=0) and
+  // kBlockN must be divisible by 3 (see tile_size_bwd_sm90 for hd192 → n=96).
+  static constexpr int AtomLayoutMSdP =
+      (kBlockN <= 64 && NumConsumerWarpGroups % 2 == 0) ? 2 : 1;
+  // Asym (192,128) @ 2 WGs: NdKV=2 → MdKV=1 so dV smem atoms use full hdv=128.
+  // MdKV=2 (128/2=64) corrupts dV epilogue (dq/dk OK, dv rel-err >> 1).
+  static constexpr int AtomLayoutNdKV = kHeadDim <= 128 ? (kBlockN <= 64 ? 1 : 2)
+      : ((NumConsumerWarpGroups == 2 && kHeadDim != kHeadDimV) ? 2 : 1);
   static constexpr int AtomLayoutMdQ = kHeadDim <= 64 ? (kBlockM <= 64 ? 1 : 2) : 1;
+  static_assert(NumConsumerWarpGroups % AtomLayoutMSdP == 0);
+  static_assert(NumConsumerWarpGroups % AtomLayoutNdKV == 0);
+  static_assert(kBlockN % (NumConsumerWarpGroups / AtomLayoutMSdP) == 0);
+  static_assert(kHeadDimV % (NumConsumerWarpGroups / AtomLayoutNdKV) == 0);
+  static_assert(kHeadDim % (NumConsumerWarpGroups / AtomLayoutNdKV) == 0 || dKV_swapAB);
 
   if constexpr (RangeMerge) {
     assert(params.merge_k_ranges != nullptr && params.bwd_kq_map != nullptr && params.bwd_unique_count != nullptr);
@@ -423,6 +446,7 @@ void run_mha_bwd_(Flash_bwd_params& params, cudaStream_t stream) {
   run_flash_bwd<
       /*Arch=*/Arch,
       /*kHeadDim=*/kHeadDim,
+      /*kHeadDimV=*/kHeadDimV,
       /*kBlockM=*/kBlockM,
       /*kBlockN=*/kBlockN,
       /*Has_softcap=*/Has_softcap,

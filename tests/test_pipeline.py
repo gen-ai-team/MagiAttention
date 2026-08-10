@@ -979,6 +979,7 @@ class TestPipelineBaseWithWorldSize1(DistTestBase):
             (64, 64),
             (128, 128),
             (192, 128),
+            (192, 192),
             (256, 256),
         ],
     )
@@ -1009,8 +1010,20 @@ class TestPipelineBaseWithWorldSize1(DistTestBase):
     ):
         head_dim, head_dim_v = head_dims
 
-        # Extended head dimensions are covered by FFA_FA4 only.
-        if head_dim > 128 and backend != MagiAttentionKernelBackend.FA4:
+        # SDPA backends do not support extended head dims; FFA/FA4 do on SM90+.
+        if head_dim > 128 and backend not in (
+            MagiAttentionKernelBackend.FA4,
+            MagiAttentionKernelBackend.FFA,
+        ):
+            return
+
+        # FFA SM90 currently supports same-dim head_dim<=192 and asym (192,128).
+        # FA4 still owns head_dim=256 (and other dims beyond FFA's current gate).
+        if backend == MagiAttentionKernelBackend.FFA and (
+            head_dim > 192
+            or head_dim_v > 192
+            or (head_dim != head_dim_v and (head_dim, head_dim_v) != (192, 128))
+        ):
             return
 
         # -----    skip if this attn_config is not for the current backend   ---- #

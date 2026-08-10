@@ -83,6 +83,7 @@ def add_ffa_spec(
     *,
     direction: str,
     head_dim: int = 128,
+    head_dim_v: int | None = None,
     compute_dtype: torch.dtype = torch.bfloat16,
     output_dtype: torch.dtype | None = None,
     ref_block_size: tuple[int, int] | None = None,
@@ -146,6 +147,7 @@ def add_ffa_spec(
             arch=_DEFAULT_ARCH,
             direction=direction,  # type: ignore[arg-type]
             head_dim=head_dim,
+            head_dim_v=head_dim_v,
             compute_dtype=compute_dtype,
             output_dtype=out_dtype,
             softcap=False,

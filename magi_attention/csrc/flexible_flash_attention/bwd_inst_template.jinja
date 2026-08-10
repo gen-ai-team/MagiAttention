@@ -15,6 +15,7 @@ using TCompute = {{ compute_t }};
 using TDq      = {{ dq_t }};
 using TDkv     = {{ dkv_t }};
 static constexpr int kHeadDim = {{ head_dim }};
+static constexpr int kHeadDimV = {{ head_dim_v | default(head_dim) }};
 static constexpr bool kHasSoftcap = {{ has_softcap }};
 static constexpr bool kDeterministic = {{ deterministic }};
 static constexpr bool kProfileMode = {{ profile_mode }};
@@ -70,11 +71,13 @@ static_assert(!(kBlockSparse && kIndexSparse), "BlockSparse and IndexSparse are 
 // Runtime contract checks to ensure consistency with compile-time constraints
 static inline void _check_runtime_contract_bwd(
     const at::Tensor& q,
+    const at::Tensor& v,
     std::optional<at::ScalarType> dk_type_opt,
     std::optional<at::ScalarType> dv_type_opt,
     float softcap) {
   TORCH_CHECK(q.scalar_type() == at::kHalf || q.scalar_type() == at::kBFloat16, "JIT-FFA bwd only supports fp16/bf16 compute");
   TORCH_CHECK(q.size(2) == kHeadDim, "HeadDim mismatch: compiled=", kHeadDim, ", runtime=", q.size(2));
+  TORCH_CHECK(v.size(2) == kHeadDimV, "HeadDimV mismatch: compiled=", kHeadDimV, ", runtime=", v.size(2));
   TORCH_CHECK(((softcap > 0.f) == kHasSoftcap), "softcap mismatch with compiled variant");
 
   auto check_dkv = [](std::optional<at::ScalarType> t, const char* name) {
@@ -123,7 +126,7 @@ std::vector<at::Tensor> mha_bwd(
     const std::string& sink_layout_,
     int const sm_margin,
     std::optional<const at::Tensor>& kv_covered_mask_) {
-  _check_runtime_contract_bwd(q, dk_type_, dv_type_, softcap);
+  _check_runtime_contract_bwd(q, v, dk_type_, dv_type_, softcap);
 
   auto stream = at::cuda::getCurrentCUDAStream().stream();
 
@@ -141,7 +144,7 @@ std::vector<at::Tensor> mha_bwd(
     MagiEvents::stop("bwd_prepare");
 
   // Kernel launch (single variant)
-  run_mha_bwd_<kArch, TCompute, TDq, TDkv, kHeadDim, kHasSoftcap, kOuterStoreNeedReduction, kDeterministic, kRangeMerge, kBwdInnerLoopK, kPackGQA, kCatGQA, kPackGQAFactor, kBlockSparse, kIndexSparse, kInnerDirMaxToMin, kMaskMode, kInnerStoreInProducer, kBwdProducerRegs, kBwdConsumerRegs, kInnerStoreMode, kBwdTileM, kBwdTileN, kBwdStages, kBwdStagesDs, kBwdStagesV, kBwdTma1dSmemRowPad, kSparseKBlockSize, kInnerLoadMode, kBwdUnionDkvSmem, kInnerStoreStages, kOuterStoreMode, kProfileMode, kPerfDebugSkipVLoad, kPerfDebugSkipDvStore, kPerfDebugSkipDkStore, kPerfDebugSkipDvMma>(params, stream);
+  run_mha_bwd_<kArch, TCompute, TDq, TDkv, kHeadDim, kHeadDimV, kHasSoftcap, kOuterStoreNeedReduction, kDeterministic, kRangeMerge, kBwdInnerLoopK, kPackGQA, kCatGQA, kPackGQAFactor, kBlockSparse, kIndexSparse, kInnerDirMaxToMin, kMaskMode, kInnerStoreInProducer, kBwdProducerRegs, kBwdConsumerRegs, kInnerStoreMode, kBwdTileM, kBwdTileN, kBwdStages, kBwdStagesDs, kBwdStagesV, kBwdTma1dSmemRowPad, kSparseKBlockSize, kInnerLoadMode, kBwdUnionDkvSmem, kInnerStoreStages, kOuterStoreMode, kProfileMode, kPerfDebugSkipVLoad, kPerfDebugSkipDvStore, kPerfDebugSkipDkStore, kPerfDebugSkipDvMma>(params, stream);
 
   return {dq, dk, dv, dsink};
 }

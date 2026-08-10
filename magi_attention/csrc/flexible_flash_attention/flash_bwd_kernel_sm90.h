@@ -44,7 +44,10 @@ class FlashAttnBwdSm90 {
   // Mainloop derived types
   using CollectiveMainloop = CollectiveMainloop_;
   using TileShape_MNK = typename CollectiveMainloop::TileShape_MNK;
+  using TileShape_MNK_V = typename CollectiveMainloop::TileShape_MNK_V;
   using TiledMmaSdP = typename CollectiveMainloop::TiledMmaSdP;
+  using TiledMmadK = typename CollectiveMainloop::TiledMmadK;
+  using TiledMmadV = typename CollectiveMainloop::TiledMmadV;
   using TiledMmadKV = typename CollectiveMainloop::TiledMmadKV;
   using TiledMmadQ = typename CollectiveMainloop::TiledMmadQ;
   using ArchTag = typename CollectiveMainloop::ArchTag;
@@ -107,6 +110,16 @@ class FlashAttnBwdSm90 {
         typename CollectiveMainloop::TensorStorage mainloop;
         typename CollectiveEpilogue::TensorStorage epilogue;
       };
+      // Asym (kHeadDim > kHeadDimV): smem_v shrinks by
+      //   kBlockN * (kHeadDim - kHeadDimV) * kStages_V * sizeof(Element)
+      // vs symmetric, but epilogue dK R2S (float, full kHeadDim) still swizzle-
+      // addresses into that region. Pad by the same byte count (Stages_V=2, bf16
+      // → factor 4) so dynamic smem covers those stores.
+      static constexpr int kPadBytes = (CollectiveMainloop::kHeadDim > CollectiveMainloop::kHeadDimV)
+          ? (CollectiveMainloop::kBlockN * (CollectiveMainloop::kHeadDim - CollectiveMainloop::kHeadDimV) *
+             CollectiveMainloop::kStages_V * int(sizeof(typename CollectiveMainloop::Element)))
+          : 0;
+      alignas(128) char asym_smem_pad[kPadBytes];
     } tensors;
 
     // k for outer-loop and q for inner-loop
@@ -247,17 +260,18 @@ class FlashAttnBwdSm90 {
     }
     MainloopPipeline pipeline_q = make_inner_pipeline<MainloopPipeline>(shared_storage.pipelines.pipeline_q, pipeline_params_q);
 
+    // dO TMA bytes differ from Q when kHeadDim != kHeadDimV (e.g. 192/128).
     PipelineParams_dO pipeline_params_do;
     if constexpr ((kInnerLoadMode == InnerLoadMode::Tma)) {
-      auto role_do = warp_group_idx == 0 ? MainloopPipeline_dO::ThreadCategory::Producer : MainloopPipeline_dO::ThreadCategory::Consumer;
-      pipeline_params_do = {pipeline_params_q.transaction_bytes, role_do, pipeline_params_q.is_leader, pipeline_params_q.num_consumers};
+      pipeline_params_do.transaction_bytes = CollectiveMainloop::TmaTransactionBytesdO + CollectiveMainloop::TmaTransactionBytesdPsum;
+      pipeline_params_do.role = warp_group_idx == 0 ? MainloopPipeline_dO::ThreadCategory::Producer : MainloopPipeline_dO::ThreadCategory::Consumer;
+      pipeline_params_do.is_leader = warp_group_thread_idx == 0;
+      pipeline_params_do.num_consumers = NumConsumerThreads;
     } else {
       pipeline_params_do.consumer_arv_count = NumConsumerThreads;
       pipeline_params_do.producer_arv_count = NumProducerLoaderThreads;
     }
-    MainloopPipeline_dO pipeline_do = make_inner_pipeline<MainloopPipeline_dO>(
-        shared_storage.pipelines.pipeline_do,
-        cute::conditional_return < Q_dO_same_stages && (kInnerLoadMode == InnerLoadMode::Tma) > (pipeline_params_q, pipeline_params_do));
+    MainloopPipeline_dO pipeline_do = make_inner_pipeline<MainloopPipeline_dO>(shared_storage.pipelines.pipeline_do, pipeline_params_do);
 
     CollectiveMainloop mainloop;
     CollectiveEpilogue epilogue;
@@ -350,9 +364,6 @@ class FlashAttnBwdSm90 {
       // Allocate the registers for the consumer WGs
       cutlass::arch::warpgroup_reg_alloc<ConsumerRegs_>();
 
-      // Initialize tiled mma object for dK=dS^TQ, dV=P^TdO
-      TiledMmadKV tiled_mma_dKV;
-
       // Initialize consumer read pipeline states of Q,dO
       PipelineState smem_pipe_read_q;
       PipelineState_dO smem_pipe_read_do;
@@ -374,8 +385,10 @@ class FlashAttnBwdSm90 {
         auto det_msg = work_block_info.get_det_msg();
 
         // Init the zero-initialized register SMEM buffer for dK and dV
-        Tensor tdKrdK = partition_fragment_C(tiled_mma_dKV, select<!dKV_swapAB ? 1 : 2, !dKV_swapAB ? 2 : 1>(TileShape_MNK{}));
-        Tensor tdVrdV = partition_fragment_C(tiled_mma_dKV, select<!dKV_swapAB ? 1 : 2, !dKV_swapAB ? 2 : 1>(TileShape_MNK{}));
+        TiledMmadK tiled_mma_dK;
+        TiledMmadV tiled_mma_dV;
+        Tensor tdKrdK = partition_fragment_C(tiled_mma_dK, select<!dKV_swapAB ? 1 : 2, !dKV_swapAB ? 2 : 1>(TileShape_MNK{}));
+        Tensor tdVrdV = partition_fragment_C(tiled_mma_dV, select<!dKV_swapAB ? 1 : 2, !dKV_swapAB ? 2 : 1>(TileShape_MNK_V{}));
         clear(tdKrdK);
         clear(tdVrdV);
 
@@ -405,7 +418,8 @@ class FlashAttnBwdSm90 {
             tdKrdK(i) *= params.mainloop.softmax_scale;
           }
           ++work_idx;
-          epilogue.store_dkv(params.epilogue, tdKrdK, tdVrdV, shared_storage, tiled_mma_dKV, threadIdx.x - NumCopyThreads, epilogue_block_coord, det_msg);
+          epilogue.store_dkv(
+              params.epilogue, tdKrdK, tdVrdV, shared_storage, tiled_mma_dK, tiled_mma_dV, threadIdx.x - NumCopyThreads, epilogue_block_coord, det_msg);
           BarrierManager::arrive<NumConsumerThreads + NumProducerLoaderThreads>(BwdNamedBarriers::KVEmpty);
         } else {
           epilogue.store_zero_dkv(params.epilogue, threadIdx.x - NumCopyThreads, epilogue_block_coord, det_msg);

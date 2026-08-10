@@ -127,6 +127,7 @@ std::tuple<Flash_bwd_params, at::Tensor, at::Tensor, at::Tensor, at::Tensor> pre
   int const num_heads_qo = q.size(1);
   int const num_heads_kv = k.size(1);
   int const head_size = q.size(2);
+  int const head_size_v = v.size(2);
   auto opts = q.options();
 
   // Check q, k, v, out, dout (dtype, device, layout)
@@ -139,10 +140,10 @@ std::tuple<Flash_bwd_params, at::Tensor, at::Tensor, at::Tensor, at::Tensor> pre
   CHECK_DEVICE(out);
   CHECK_DEVICE(dout);
   CHECK_SHAPE(q, total_q, num_heads_qo, head_size);
-  CHECK_SHAPE(out, total_q, num_heads_qo, head_size);
-  CHECK_SHAPE(dout, total_q, num_heads_qo, head_size);
+  CHECK_SHAPE(out, total_q, num_heads_qo, head_size_v);
+  CHECK_SHAPE(dout, total_q, num_heads_qo, head_size_v);
   CHECK_SHAPE(k, total_k, num_heads_kv, head_size);
-  CHECK_SHAPE(v, total_k, num_heads_kv, head_size);
+  CHECK_SHAPE(v, total_k, num_heads_kv, head_size_v);
   TORCH_CHECK(q.stride(-1) == 1 && k.stride(-1) == 1 && v.stride(-1) == 1 && out.stride(-1) == 1 && dout.stride(-1) == 1);
   TORCH_CHECK(
       BwdInnerLoopK || OuterStoreNeedReduction || (num_heads_qo == num_heads_kv || PackGQA || CatGQA),
@@ -274,6 +275,7 @@ std::tuple<Flash_bwd_params, at::Tensor, at::Tensor, at::Tensor, at::Tensor> pre
 
   int const max_headdim = get_max_headdim();
   TORCH_CHECK(head_size % 8 == 0 && head_size <= max_headdim);
+  TORCH_CHECK(head_size_v % 8 == 0 && head_size_v <= max_headdim);
   TORCH_CHECK(num_heads_qo % num_heads_kv == 0);
   int element_size = (q_type == at::ScalarType::BFloat16) ? sizeof(cutlass::bfloat16_t) : sizeof(cutlass::half_t);
   int const kBlockM = std::get<0>(tile_size_bwd_sm90<BwdInnerLoopK, (IndexSparse && !BwdInnerLoopK)>(head_size, element_size, softcap > 0.0));
@@ -351,7 +353,7 @@ std::tuple<Flash_bwd_params, at::Tensor, at::Tensor, at::Tensor, at::Tensor> pre
     dv = dv_.value();
     TORCH_CHECK(dv.dtype() == dv_type, "dv must have the same dtype as dv_type (if given)");
     CHECK_DEVICE(dv);
-    CHECK_SHAPE(dv, total_k, num_heads_kv, head_size);
+    CHECK_SHAPE(dv, total_k, num_heads_kv, head_size_v);
     TORCH_CHECK(dv.stride(-1) == 1, "dv must have contiguous last dimension");
   } else {
     dv = torch::zeros_like(v, opts.dtype(dv_type));
@@ -437,6 +439,8 @@ std::tuple<Flash_bwd_params, at::Tensor, at::Tensor, at::Tensor, at::Tensor> pre
       num_heads_kv,
       head_size,
       round_up_headdim(head_size),
+      head_size_v,
+      round_up_headdim(head_size_v),
       q,
       k,
       v,

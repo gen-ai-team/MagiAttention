@@ -79,6 +79,7 @@ std::tuple<Flash_fwd_params, at::Tensor, at::Tensor, std::optional<at::Tensor>> 
   int const num_heads_kv = k.size(1);
   int const qhead_per_khead = num_heads_qo / num_heads_kv;
   int const head_size = q.size(2);
+  int const head_size_v = v.size(2);
   auto opts = q.options();
 
   // Check q, k, v (dtype, device, layout)
@@ -92,7 +93,7 @@ std::tuple<Flash_fwd_params, at::Tensor, at::Tensor, std::optional<at::Tensor>> 
   TORCH_CHECK(q.dim() == 3 && k.dim() == 3 && v.dim() == 3, "q/k/v must be 3D");
   CHECK_SHAPE(q, total_q, num_heads_qo, head_size);
   CHECK_SHAPE(k, total_k, num_heads_kv, head_size);
-  CHECK_SHAPE(v, total_k, num_heads_kv, head_size);
+  CHECK_SHAPE(v, total_k, num_heads_kv, head_size_v);
   TORCH_CHECK(q.stride(-1) == 1 && k.stride(-1) == 1 && v.stride(-1) == 1, "q/k/v last dim must be contiguous");
 
   at::Tensor q_ranges, k_ranges;
@@ -175,7 +176,9 @@ std::tuple<Flash_fwd_params, at::Tensor, at::Tensor, std::optional<at::Tensor>> 
 
   int const max_headdim = get_max_headdim();
   TORCH_CHECK(head_size <= max_headdim);
+  TORCH_CHECK(head_size_v <= max_headdim);
   TORCH_CHECK(head_size % 8 == 0, "head_size should be a multiple of 8");
+  TORCH_CHECK(head_size_v % 8 == 0, "head_size_v should be a multiple of 8");
   TORCH_CHECK(num_heads_qo % num_heads_kv == 0, "Number of heads in key/value must divide number of heads in query");
   // check PackGQA, the group_size of gqa should be divisible by kblockm in FFA,
   // OR kblockm should be divisible by group_size (one group spans multiple tiles).
@@ -191,6 +194,7 @@ std::tuple<Flash_fwd_params, at::Tensor, at::Tensor, std::optional<at::Tensor>> 
 
   // Define a helper function to round up to multiple of m
   int const head_size_rounded = round_up_headdim(head_size);
+  int const head_size_v_rounded = round_up_headdim(head_size_v);
 
   at::cuda::CUDAGuard device_guard{(char)q.get_device()};
 
@@ -283,10 +287,10 @@ std::tuple<Flash_fwd_params, at::Tensor, at::Tensor, std::optional<at::Tensor>> 
   if (out_.has_value())
     out = out_.value();
   else
-    out = torch::empty_like(q, opts.dtype(out_type));
+    out = torch::empty({total_q, num_heads_qo, head_size_v}, opts.dtype(out_type));
   TORCH_CHECK(out.scalar_type() == out_type);
   CHECK_DEVICE(out);
-  CHECK_SHAPE(out, total_q, num_heads_qo, head_size);
+  CHECK_SHAPE(out, total_q, num_heads_qo, head_size_v);
   TORCH_CHECK(out.stride(-1) == 1);
 
   int num_heads = !PackGQA ? num_heads_qo : num_heads_kv;
@@ -343,6 +347,8 @@ std::tuple<Flash_fwd_params, at::Tensor, at::Tensor, std::optional<at::Tensor>> 
       num_heads_kv,
       head_size,
       head_size_rounded,
+      head_size_v,
+      head_size_v_rounded,
       q,
       k,
       v,

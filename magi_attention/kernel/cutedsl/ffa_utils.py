@@ -296,8 +296,9 @@ def tile_size_fwd_sm90(
     elif head_dim <= 128:
         return FwdConfig(128, 128, True, True)
     elif head_dim <= 192:
-        tile_n = 96 if is_local else (128 if head_dim_v <= 128 else 112)
-        return FwdConfig(128, tile_n, True, True)
+        # Match FA3/JIT (128, 96): larger tile_n (112/128) exceeds H100 smem with
+        # num_stages=2 and Q_in_regs=False.
+        return FwdConfig(128, 96, True, True)
     else:  # hdim 256
         tile_n = 64 if is_local else 80
         return FwdConfig(128, tile_n, True, True)
@@ -377,37 +378,26 @@ def tile_size_bwd_sm90(head_dim, head_dim_v, causal, local, sparse_block_size_q=
             AtomLayoutMdQ=1,
         )
     elif head_dim <= 192:
+        # Match flash_attn cute (Python DSL) hd192 — not C++ FA3's 3-WG path.
+        # C++ uses 3 consumer WGs + dQ_swapAB for sym 192, but CuteDSL
+        # postprocess with that combo injects sparse NaNs into dQ (accum is
+        # finite; convert-to-bf16 path is wrong). Upstream FA cute uses 2 WGs,
+        # dQ_swapAB=False, AtomLayoutNdKV=2, tile n=96.
         hdimv128 = head_dim_v <= 128
-        if hdimv128:
-            return BwdConfig(
-                m_block_size=64,
-                n_block_size=96,
-                num_stages_Q=2,
-                num_stages_dO=2,
-                num_stages_PdS=1,
-                SdP_swapAB=False,
-                dKV_swapAB=True,
-                dQ_swapAB=False,
-                AtomLayoutMSdP=1,
-                AtomLayoutNdKV=2,
-                AtomLayoutMdQ=1,
-                num_wg=2,
-            )
-        else:
-            return BwdConfig(
-                m_block_size=64,
-                n_block_size=96,
-                num_stages_Q=2,
-                num_stages_dO=1,
-                num_stages_PdS=1,
-                SdP_swapAB=False,
-                dKV_swapAB=True,
-                dQ_swapAB=False,
-                AtomLayoutMSdP=1,
-                AtomLayoutNdKV=2,
-                AtomLayoutMdQ=1,
-                num_wg=2,
-            )
+        return BwdConfig(
+            m_block_size=64,
+            n_block_size=96,
+            num_stages_Q=2,
+            num_stages_dO=2 if hdimv128 else 1,
+            num_stages_PdS=1,
+            SdP_swapAB=False,
+            dKV_swapAB=True,
+            dQ_swapAB=False,
+            AtomLayoutMSdP=1,
+            AtomLayoutNdKV=2,
+            AtomLayoutMdQ=1,
+            num_wg=2,
+        )
     else:
         # hdim 256
         return BwdConfig(

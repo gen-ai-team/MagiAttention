@@ -49,6 +49,7 @@ template <
     int Stages,
     class ClusterShape_,
     class TileShape_MNK_,
+    int kHeadDimV_,
     class Element_,
     class ElementAccum_,
     class ArchTag_,
@@ -96,6 +97,8 @@ struct CollectiveMainloopFwdSm90 {
   static constexpr int kBlockM = get<0>(TileShape_MNK{});
   static constexpr int kBlockN = get<1>(TileShape_MNK{});
   static constexpr int kHeadDim = get<2>(TileShape_MNK{});
+  static constexpr int kHeadDimV = kHeadDimV_;
+  static_assert(kHeadDimV > 0, "kHeadDimV must be positive");
 
   // when SwapAB == true, set the warp group overlap tileMMA size for kBlockM
   static constexpr int TileSize_kBlockM = kBlockM;
@@ -111,17 +114,17 @@ struct CollectiveMainloopFwdSm90 {
 
   using TileShape_MNK_SwapAB_OP_SELECT = Shape<Int<kBlockN>, Int<TileSize_kBlockM>, Int<kHeadDim>>;
 
-  // TileShapeMNK for mma pv: kBlockM, kHeadDim, kBlockN
-  // (kBlockM, kBlockN) @ (kBlockN, kHeadDim) -> (kBlockM, kHeadDim)
-  using TileShape_MNK_PV = Shape<Int<kBlockM>, Int<kHeadDim>, Int<kBlockN>>;
+  // TileShapeMNK for mma pv: kBlockM, kHeadDimV, kBlockN
+  // (kBlockM, kBlockN) @ (kBlockN, kHeadDimV) -> (kBlockM, kHeadDimV)
+  using TileShape_MNK_PV = Shape<Int<kBlockM>, Int<kHeadDimV>, Int<kBlockN>>;
 
-  // (kHeadDim, kBlockN) @ (kBlockN, kBlockM) -> (kHeadDim, kBlockM)
-  using TileShape_MNK_PV_SwapAB = Shape<Int<kHeadDim>, Int<kBlockM>, Int<kBlockN>>;
+  // (kHeadDimV, kBlockN) @ (kBlockN, kBlockM) -> (kHeadDimV, kBlockM)
+  using TileShape_MNK_PV_SwapAB = Shape<Int<kHeadDimV>, Int<kBlockM>, Int<kBlockN>>;
 
   // TileShape_MNK_SwapAB_OP_SELECT use TileSize_kBlockM as n,
   // which use in tensor core ss_op_selector for inter warp group overlap
   // (splitting short q range when SwapAB is open).
-  using TileShape_MNK_PV_SwapAB_OP_SELECT = Shape<Int<kHeadDim>, Int<TileSize_kBlockM>, Int<kBlockN>>;
+  using TileShape_MNK_PV_SwapAB_OP_SELECT = Shape<Int<kHeadDimV>, Int<TileSize_kBlockM>, Int<kBlockN>>;
 
   using TileShape_MNK_PV_Active = std::conditional_t<SwapAB, TileShape_MNK_PV_SwapAB, TileShape_MNK_PV>;
 
@@ -169,9 +172,9 @@ struct CollectiveMainloopFwdSm90 {
   // Atom layout for PV is the same as QK
   using AtomLayoutPV = AtomLayoutQK;
   using AtomLayoutPV_SwapAB = AtomLayoutQK_SwapAB;
-  // permutate V @ P, divide kHeadDim
-  // (kHeadDim, kBlockN) @ (kBlockN, kBlockM) -> (kHeadDim, kBlockM)
-  using PermutationPV_SwapAB = Tile<Int<kHeadDim>, Int<kBlockM>, Int<kBlockN>>;
+  // permutate V @ P, divide kHeadDimV
+  // (kHeadDimV, kBlockN) @ (kBlockN, kBlockM) -> (kHeadDimV, kBlockM)
+  using PermutationPV_SwapAB = Tile<Int<kHeadDimV>, Int<kBlockM>, Int<kBlockN>>;
 
   // Use if constexpr to avoid instantiating unused PV branches that can trigger static asserts
   static constexpr auto make_tiled_mma_pv_active() {
@@ -221,17 +224,17 @@ struct CollectiveMainloopFwdSm90 {
   // V stays swizzled (SW128) even for CpAsync: the MN-major INTER atom is too fine-grained
   // (2×16 elements) and causes poor WGMMA PV GEMM access patterns. Benchmarked: V INTER
   // causes ~37% regression on kbs=1 FWD. K INTER works because K-major atom is 16×2 (matching WGMMA reads).
-  using SmemLayoutAtomVt = decltype(gcd::ss_smem_selector<TmaMajorV, Element, Int<kHeadDim>, decltype(cute::get<2>(TileShape_MNK_PV_Active{}))>());
+  using SmemLayoutAtomVt = decltype(gcd::ss_smem_selector<TmaMajorV, Element, Int<kHeadDimV>, decltype(cute::get<2>(TileShape_MNK_PV_Active{}))>());
   using SmemLayoutVt = decltype(tile_to_shape(
       SmemLayoutAtomVt{},
-      make_shape(Int<kHeadDim>{}, shape<2>(TileShape_MNK_PV_Active{}), Int<kStages>{}), // (kHeadDim, kBlockN, kStages)
+      make_shape(Int<kHeadDimV>{}, shape<2>(TileShape_MNK_PV_Active{}), Int<kStages>{}), // (kHeadDimV, kBlockN, kStages)
       std::conditional_t<TmaMajorV == GMMA::Major::K, cute::Step<_1, _2, _3>, cute::Step<_2, _1, _3>>{}));
 
   // Get the smem layout for V transpose for mma
-  using SmemLayoutAtomVtMma = decltype(gcd::ss_smem_selector<MmaMajorV, Element, Int<kHeadDim>, decltype(cute::get<2>(TileShape_MNK_PV_Active{}))>());
+  using SmemLayoutAtomVtMma = decltype(gcd::ss_smem_selector<MmaMajorV, Element, Int<kHeadDimV>, decltype(cute::get<2>(TileShape_MNK_PV_Active{}))>());
   using SmemLayoutVtMma = decltype(tile_to_shape(
       SmemLayoutAtomVtMma{},
-      make_shape(Int<kHeadDim>{}, shape<2>(TileShape_MNK_PV_Active{}), Int<kStages>{}),
+      make_shape(Int<kHeadDimV>{}, shape<2>(TileShape_MNK_PV_Active{}), Int<kStages>{}),
       std::conditional_t<MmaMajorV == GMMA::Major::K, cute::Step<_1, _2, _3>, cute::Step<_2, _1, _3>>{}));
 
   // Get the smem layout for P, used when MmaPV_is_RS is false
@@ -302,7 +305,7 @@ struct CollectiveMainloopFwdSm90 {
   static constexpr uint32_t TmaTransactionBytesQ = static_cast<uint32_t>(size(SmemLayoutQ{}) * sizeof_bytes_v<Element>());
   static constexpr uint32_t TmaTransactionBytesK = static_cast<uint32_t>(size(take<0, 2>(SmemLayoutK{})) * sizeof_bytes_v<Element>());
   static constexpr uint32_t TmaTransactionBytesV = static_cast<uint32_t>(size(take<0, 2>(SmemLayoutVt{})) * sizeof_bytes_v<Element>());
-  static_assert(TmaTransactionBytesK == TmaTransactionBytesV, "TmaTransactionBytesK must equal TmaTransactionBytesV");
+  // K and V TMA bytes may differ when kHeadDim != kHeadDimV (e.g. 192/128).
 
   using PipelineTmaAsync =
       std::conditional_t<CUTE_STATIC_V(size(ClusterShape{})) == 1, typename cutlass::PipelineTmaAsyncNoCluster<kStages>, typename cutlass::PipelineTmaAsync<kStages>>;
@@ -363,7 +366,7 @@ struct CollectiveMainloopFwdSm90 {
   // Intra-WG overlap only: rescale O *before* gemm_PV when head dim is large,
   // to avoid rescaling the just-accumulated P@V term together with old O.
   // Irrelevant when !IntraWGOverlap (serial path always rescales before gemm_PV).
-  static constexpr bool RescaleOBeforeGemm = kHeadDim > 128 && IntraWGOverlap;
+  static constexpr bool RescaleOBeforeGemm = kHeadDimV > 128 && IntraWGOverlap;
 
   // Host side kernel arguments
   struct Arguments {
@@ -592,7 +595,8 @@ struct CollectiveMainloopFwdSm90 {
     int const idx_in_warpgroup = threadIdx.x % NumProducerThreads;
     static constexpr int kElemsPerLane = ScatterLdst::kLaneBytes / sizeof(Element);
     static constexpr int kElemsPerRow = ScatterLdst::kBankRowBytes / sizeof(Element);
-    static constexpr int kTilesPerRow = kHeadDim / kElemsPerRow;
+    static constexpr int kTilesPerRowK = kHeadDim / kElemsPerRow;
+    static constexpr int kTilesPerRowV = kHeadDimV / kElemsPerRow;
     int const ldst_group_inner_idx = idx_in_warpgroup % ScatterLdst::kThreadsPerGroup;
     int const ldst_group_idx = idx_in_warpgroup / ScatterLdst::kThreadsPerGroup;
     int const stride_kv = get<0>(params.stride_K);
@@ -667,7 +671,7 @@ struct CollectiveMainloopFwdSm90 {
           int smem_row = ldst_group_idx * ScatterLdst::kTokensPerGroup + local_row;
           int token_offset = idx_slot[smem_row] * stride_kv;
           CUTE_UNROLL
-          for (int tile_idx = 0; tile_idx < kTilesPerRow; ++tile_idx) {
+          for (int tile_idx = 0; tile_idx < kTilesPerRowK; ++tile_idx) {
             if (ldst_group_inner_idx * kElemsPerLane + tile_idx * kElemsPerRow < kHeadDim) {
               Element* dst_ptr = &sK(smem_row, ldst_group_inner_idx * kElemsPerLane + tile_idx * kElemsPerRow, smem_pipe_write_k.index());
               auto gK_src = make_tensor(make_gmem_ptr(reinterpret_cast<cute::uint128_t const*>(ptr_gK_base + token_offset + tile_idx * kElemsPerRow)), Layout<_1>{});
@@ -717,8 +721,8 @@ struct CollectiveMainloopFwdSm90 {
         for (int local_row = 0; local_row < ScatterLdst::kTokensPerGroup; ++local_row) {
           int const token_offset = idx_slot[ldst_group_idx * ScatterLdst::kTokensPerGroup + local_row] * stride_kv_v;
           CUTE_UNROLL
-          for (int tile_idx = 0; tile_idx < kTilesPerRow; ++tile_idx) {
-            if (ldst_group_inner_idx * kElemsPerLane + tile_idx * kElemsPerRow < kHeadDim) {
+          for (int tile_idx = 0; tile_idx < kTilesPerRowV; ++tile_idx) {
+            if (ldst_group_inner_idx * kElemsPerLane + tile_idx * kElemsPerRow < kHeadDimV) {
               Element* dst_ptr = &sVt(
                   ldst_group_inner_idx * kElemsPerLane + tile_idx * kElemsPerRow, ldst_group_idx * ScatterLdst::kTokensPerGroup + local_row, smem_pipe_write_v.index());
               auto gV_src = make_tensor(make_gmem_ptr(reinterpret_cast<cute::uint128_t const*>(ptr_gV_base + token_offset + tile_idx * kElemsPerRow)), Layout<_1>{});

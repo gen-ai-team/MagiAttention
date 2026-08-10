@@ -246,8 +246,12 @@ class FlashAttnFwdSm90 {
       pipeline_params_k.producer_arv_count = NumProducerThreads;
     }
 
+    // V may use a different TMA byte count when kHeadDim != kHeadDimV (e.g. 192/128).
     static_assert(is_same_v<PipelineParamsK, PipelineParamsV>);
-    PipelineParamsV pipeline_params_v = pipeline_params_k; // K,V share the same pipeline params
+    PipelineParamsV pipeline_params_v = pipeline_params_k;
+    if constexpr (kInnerLoadMode == InnerLoadMode::Tma) {
+      pipeline_params_v.transaction_bytes = CollectiveMainloop::TmaTransactionBytesV;
+    }
 
     MainloopPipelineK pipeline_k = make_kv_pipeline<MainloopPipelineK>(shared_storage.pipelines.pipeline_k, pipeline_params_k);
     MainloopPipelineV pipeline_v = make_kv_pipeline<MainloopPipelineV>(shared_storage.pipelines.pipeline_v, pipeline_params_v);

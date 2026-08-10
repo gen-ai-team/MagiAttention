@@ -224,7 +224,7 @@ class TestFlexFlashAttn(DistTestBase):
             "block_sparse": True,
         },
     ]
-    _HEAD_DIMS = [64, 128]
+    _HEAD_DIMS = [64, 128, 192]
     _PACK_GQA_FACTORS = [1, 2, 8]
 
     @classmethod
@@ -541,7 +541,27 @@ class TestFlexFlashAttn(DistTestBase):
                 )
 
         # ═══════════════════════════════════════════════════════════════════
-        # Section 6: Special cases
+        # Section 6: Asymmetric head dims (192, 128) dense FWD/BWD
+        # ═══════════════════════════════════════════════════════════════════
+        for dt in _DTYPES:
+            add_ffa_spec(
+                specs,
+                direction="fwd",
+                head_dim=192,
+                head_dim_v=128,
+                compute_dtype=dt,
+                output_dtype=torch.float32,
+            )
+            add_ffa_spec(
+                specs,
+                direction="bwd",
+                head_dim=192,
+                head_dim_v=128,
+                compute_dtype=dt,
+            )
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Section 7: Special cases
         # ═══════════════════════════════════════════════════════════════════
         # Index sparse BWD LoopK
         add_ffa_spec(
@@ -2976,6 +2996,67 @@ class TestFlexFlashAttnSimple(unittest.TestCase):
             del os.environ["MAGI_ATTENTION_FFA_USE_MASK_DISPATCH"]
             if hasattr(get_ffa_jit_mod, "cache_clear"):
                 get_ffa_jit_mod.cache_clear()
+
+    @parameterize("head_dims", [(192, 192), (192, 128)])
+    @parameterize("attn_type", [0, 1])  # full, causal
+    @parameterize("mha_type", ["mha", "gqa"])
+    def test_sm90_head_dim_192(self, head_dims, attn_type, mha_type):
+        """Dense SM90 FFA correctness for symmetric/asymmetric head_dim=192."""
+        head_dim, head_dim_v = head_dims
+        device = self.device
+        dtype = torch.bfloat16
+        torch.manual_seed(42)
+
+        S, nhq = 256, 4
+        nhkv = nhq if mha_type == "mha" else 2
+        q = torch.randn(
+            S, nhq, head_dim, dtype=dtype, device=device, requires_grad=True
+        )
+        k = torch.randn(
+            S, nhkv, head_dim, dtype=dtype, device=device, requires_grad=True
+        )
+        v = torch.randn(
+            S, nhkv, head_dim_v, dtype=dtype, device=device, requires_grad=True
+        )
+        do = torch.randn(S, nhq, head_dim_v, dtype=dtype, device=device)
+        q_ranges = torch.tensor([[0, S]], device=device, dtype=torch.int32)
+        k_ranges = torch.tensor([[0, S]], device=device, dtype=torch.int32)
+        attn_type_map = torch.tensor([attn_type], device=device, dtype=torch.int32)
+
+        out, meta = flex_flash_attn_func(
+            q,
+            k,
+            v,
+            q_ranges=q_ranges,
+            k_ranges=k_ranges,
+            attn_type_map=attn_type_map,
+        )
+        out.backward(do)
+
+        self.assert_close_to_torch_ref(
+            q_ranges=AttnRanges.from_ranges([[0, S]]),
+            k_ranges=AttnRanges.from_ranges([[0, S]]),
+            attn_type_map=[attn_type],
+            total_seqlen_q=S,
+            total_seqlen_k=S,
+            total_q=q,
+            total_k=k,
+            total_v=v,
+            total_sink=None,
+            total_out=out,
+            total_lse=meta.lse,
+            grad_total_q=q.grad,
+            grad_total_k=k.grad,
+            grad_total_v=v.grad,
+            grad_total_sink=None,
+            grad_total_out=do,
+            dtype=dtype,
+            sink_layout="sh",
+            test_case=(
+                f"[test_sm90_head_dim_192][{head_dim=}][{head_dim_v=}]"
+                f"[{attn_type=}][{mha_type=}]"
+            ),
+        )
 
 
 if __name__ == "__main__":

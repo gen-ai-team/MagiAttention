@@ -33,15 +33,17 @@
 
 using namespace cute;
 
-template <typename TDkv, uint32_t kBlockN, uint32_t kHeadDim, class ArchTag>
+template <typename TDkv, uint32_t kBlockN, uint32_t kHeadDim, uint32_t kHeadDimV, class ArchTag>
 void run_flash_bwd_dkv_postprocess(Flash_bwd_params& params, cudaStream_t stream) {
-  using PostprocessKernel = flash::FlashAttnBwdDkvPostprocess<TDkv, kBlockN, kHeadDim, ArchTag>;
+  using PostprocessKernel = flash::FlashAttnBwdDkvPostprocess<TDkv, kBlockN, kHeadDim, kHeadDimV, ArchTag>;
 
   typename PostprocessKernel::Params p;
   p.ptr_dK = static_cast<TDkv*>(params.dk_ptr);
   p.ptr_dV = static_cast<TDkv*>(params.dv_ptr);
-  p.shape_dkv = make_shape((int32_t)params.total_k, (int32_t)params.d, (int32_t)params.h_kv);
-  p.stride_dkv = make_stride((int64_t)params.dk_row_stride, _1{}, (int64_t)params.dk_head_stride);
+  p.shape_dK = make_shape((int32_t)params.total_k, (int32_t)params.d, (int32_t)params.h_kv);
+  p.shape_dV = make_shape((int32_t)params.total_k, (int32_t)params.d_v, (int32_t)params.h_kv);
+  p.stride_dK = make_stride((int64_t)params.dk_row_stride, _1{}, (int64_t)params.dk_head_stride);
+  p.stride_dV = make_stride((int64_t)params.dv_row_stride, _1{}, (int64_t)params.dv_head_stride);
   // use bwd_unique_count when AutoRangeMerge is true
   if (params.bwd_unique_count != nullptr) {
     p.k_ranges = params.merge_k_ranges;
@@ -55,16 +57,16 @@ void run_flash_bwd_dkv_postprocess(Flash_bwd_params& params, cudaStream_t stream
   p.kv_covered_mask = params.kv_covered_mask;
 
   dim3 grid(cute::ceil_div(params.total_k, kBlockN), params.h_kv, 1);
-  dim3 block(kHeadDim, 1, 1);
+  dim3 block(kHeadDim > kHeadDimV ? kHeadDim : kHeadDimV, 1, 1);
 
   int smem_size = PostprocessKernel::SharedStorageSize;
   cutlass::device_kernel<PostprocessKernel><<<grid, block, smem_size, stream>>>(p);
   CHECK_CUDA_KERNEL_LAUNCH();
 }
 
-template <typename TDkv, uint32_t kHeadDim>
+template <typename TDkv, uint32_t kHeadDim, uint32_t kHeadDimV>
 void run_flash_bwd_dkv_postprocess_(Flash_bwd_params& params, cudaStream_t stream) {
   static constexpr uint32_t kBlockN = 32;
   using ArchTag = cutlass::arch::Sm90;
-  run_flash_bwd_dkv_postprocess<TDkv, kBlockN, kHeadDim, ArchTag>(params, stream);
+  run_flash_bwd_dkv_postprocess<TDkv, kBlockN, kHeadDim, kHeadDimV, ArchTag>(params, stream);
 }

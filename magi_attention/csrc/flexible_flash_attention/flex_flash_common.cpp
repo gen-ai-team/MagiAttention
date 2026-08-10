@@ -26,6 +26,8 @@ void set_params_fprop(
     const size_t h_kv,
     const size_t d,
     const size_t d_rounded,
+    const size_t d_v,
+    const size_t d_v_rounded,
     const at::Tensor q,
     const at::Tensor k,
     const at::Tensor v,
@@ -68,6 +70,8 @@ void set_params_fprop(
   params.total_sink = total_sink;
   params.d = d;
   params.d_rounded = d_rounded;
+  params.d_v = d_v;
+  params.d_v_rounded = d_v_rounded;
 
   // Set the compute and output types for the kernel.
   // Compute type is the type of the input tensors.
@@ -156,6 +160,8 @@ void set_params_dgrad(
     const size_t h_kv,
     const size_t d,
     const size_t d_rounded,
+    const size_t d_v,
+    const size_t d_v_rounded,
     const at::Tensor q,
     const at::Tensor k,
     const at::Tensor v,
@@ -199,6 +205,8 @@ void set_params_dgrad(
       h_kv,
       d,
       d_rounded,
+      d_v,
+      d_v_rounded,
       q,
       k,
       v,
@@ -268,22 +276,22 @@ void run_flash_fwd_post_process(Flash_fwd_params& params, cudaStream_t stream) {
   // Fast zero-fill for output accumulator if needed by kernel configuration
   OUT_DTYPE_SWITCH(params.out_type, TOut, [&] {
 #ifndef FLASHATTENTION_DISABLE_HDIM64
-    if (params.d <= 64) {
+    if (params.d_v <= 64) {
       return run_flash_fwd_post_process_<TOut, 64>(params, stream);
     }
 #endif
 #ifndef FLASHATTENTION_DISABLE_HDIM128
-    if (params.d <= 128) {
+    if (params.d_v <= 128) {
       return run_flash_fwd_post_process_<TOut, 128>(params, stream);
     }
 #endif
 #ifndef FLASHATTENTION_DISABLE_HDIM192
-    if (params.d <= 192) {
+    if (params.d_v <= 192) {
       return run_flash_fwd_post_process_<TOut, 192>(params, stream);
     }
 #endif
 #ifndef FLASHATTENTION_DISABLE_HDIM256
-    if (params.d <= 256) {
+    if (params.d_v <= 256) {
       return run_flash_fwd_post_process_<TOut, 256>(params, stream);
     }
 #endif

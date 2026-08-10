@@ -252,20 +252,32 @@ class TestFfaSimple(DistTestBase):
     @parameterize("dtype", [torch.bfloat16, torch.float16])
     @parameterize("mha_type", ["mha", "gqa", "mqa"])
     @parameterize("mask_types", [MT_MAP.full, MT_MAP.causal])
-    @parameterize("d", [64, 128])
+    @parameterize(
+        "head_dims",
+        [
+            (64, 64),
+            (128, 128),
+            (192, 192),
+            (192, 128),
+        ],
+    )
     @parameterize("force_sm80", [False, True])
     @parameterize("seqlens", [(256, 256), (1024, 1024), (203, 123)])
     def test_non_varlen_fwd_bwd(
-        self, seqlens, force_sm80, d, mask_types, mha_type, dtype
+        self, seqlens, force_sm80, head_dims, mask_types, mha_type, dtype
     ):
         """Non-varlen flex_flash_attn_func: fwd + bwd for full/causal x MHA/GQA/MQA."""
+        head_dim, head_dim_v = head_dims
         if force_sm80 and is_ampere():
             # kernel path is already SM80 on Ampere, no need to force it
+            return
+        # SM80 CuteDSL path does not support head_dim > 128.
+        if force_sm80 and head_dim > 128:
             return
 
         seqlen_q, seqlen_k = seqlens
         device = self.device
-        seed = self.seed + seqlen_q + seqlen_k + d + mask_types * 3
+        seed = self.seed + seqlen_q + seqlen_k + head_dim + head_dim_v + mask_types * 3
         torch.random.manual_seed(seed)
         random.seed(seed)
 
@@ -274,18 +286,18 @@ class TestFfaSimple(DistTestBase):
         nheads_kv = {"mha": nheads, "gqa": 3, "mqa": 1}[mha_type]
 
         q = torch.randn(
-            batch_size, seqlen_q, nheads, d, device=device, dtype=dtype
+            batch_size, seqlen_q, nheads, head_dim, device=device, dtype=dtype
         ).requires_grad_()
         k = torch.randn(
-            batch_size, seqlen_k, nheads_kv, d, device=device, dtype=dtype
+            batch_size, seqlen_k, nheads_kv, head_dim, device=device, dtype=dtype
         ).requires_grad_()
         v = torch.randn(
-            batch_size, seqlen_k, nheads_kv, d, device=device, dtype=dtype
+            batch_size, seqlen_k, nheads_kv, head_dim_v, device=device, dtype=dtype
         ).requires_grad_()
 
         test_case = (
             f"[RANK {self.rank}][test_non_varlen_fwd_bwd]"
-            f"[{force_sm80=}][{seqlen_q=}][{seqlen_k=}][{d=}]"
+            f"[{force_sm80=}][{seqlen_q=}][{seqlen_k=}][{head_dim=}][{head_dim_v=}]"
             f"[{mask_types=}][{mha_type=}][{dtype=}]"
         )
 
@@ -327,17 +339,30 @@ class TestFfaSimple(DistTestBase):
     @parameterize("dtype", [torch.bfloat16, torch.float16])
     @parameterize("mha_type", ["mha", "gqa", "mqa"])
     @parameterize("mask_types", [MT_MAP.full, MT_MAP.causal])
-    @parameterize("d", [64, 128])
+    @parameterize(
+        "head_dims",
+        [
+            (64, 64),
+            (128, 128),
+            (192, 192),
+            (192, 128),
+        ],
+    )
     @parameterize("force_sm80", [False, True])
     @parameterize("seqlen", [128, 512, 1024])
-    def test_varlen_fwd_bwd(self, seqlen, force_sm80, d, mask_types, mha_type, dtype):
+    def test_varlen_fwd_bwd(
+        self, seqlen, force_sm80, head_dims, mask_types, mha_type, dtype
+    ):
         """Varlen flex_flash_attn_func (packed q/k ranges): fwd + bwd."""
+        head_dim, head_dim_v = head_dims
         if force_sm80 and is_ampere():
             # kernel path is already SM80 on Ampere, no need to force it
             return
+        if force_sm80 and head_dim > 128:
+            return
 
         device = self.device
-        seed = self.seed + seqlen + d + mask_types * 5
+        seed = self.seed + seqlen + head_dim + head_dim_v + mask_types * 5
         torch.random.manual_seed(seed)
         random.seed(seed)
 
@@ -346,13 +371,13 @@ class TestFfaSimple(DistTestBase):
         nheads_kv = {"mha": nheads, "gqa": 3, "mqa": 1}[mha_type]
 
         q_v = torch.randn(
-            batch_size * seqlen, nheads, d, device=device, dtype=dtype
+            batch_size * seqlen, nheads, head_dim, device=device, dtype=dtype
         ).requires_grad_()
         k_v = torch.randn(
-            batch_size * seqlen, nheads_kv, d, device=device, dtype=dtype
+            batch_size * seqlen, nheads_kv, head_dim, device=device, dtype=dtype
         ).requires_grad_()
         v_v = torch.randn(
-            batch_size * seqlen, nheads_kv, d, device=device, dtype=dtype
+            batch_size * seqlen, nheads_kv, head_dim_v, device=device, dtype=dtype
         ).requires_grad_()
 
         cu_seqlens = torch.arange(
@@ -364,7 +389,7 @@ class TestFfaSimple(DistTestBase):
 
         test_case = (
             f"[RANK {self.rank}][test_varlen_fwd_bwd]"
-            f"[{force_sm80=}][{seqlen=}][{d=}]"
+            f"[{force_sm80=}][{seqlen=}][{head_dim=}][{head_dim_v=}]"
             f"[{mask_types=}][{mha_type=}][{dtype=}]"
         )
 

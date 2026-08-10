@@ -245,6 +245,7 @@ def _flex_flash_attn_forward_compilable(
     mod = get_ffa_jit_mod(
         direction="fwd",
         head_dim=q.shape[-1],
+        head_dim_v=v.shape[-1],
         compute_dtype=q.dtype,
         output_dtype=out_type
         or (q.dtype if disable_fwd_atomic_reduction else torch.float32),
@@ -379,8 +380,8 @@ def _flex_flash_attn_forward(
     ]
 
     out = (
-        torch.empty_like(
-            q,
+        torch.empty(
+            (q.size(0), q.size(1), v.size(-1)),
             dtype=out_type
             or (q.dtype if disable_fwd_atomic_reduction else torch.float32),
             device=q.device,
@@ -510,6 +511,7 @@ def _flex_flash_attn_backward_compilable(
     mod = get_ffa_jit_mod(
         direction="bwd",
         head_dim=q.shape[-1],
+        head_dim_v=v.shape[-1],
         compute_dtype=q.dtype,
         output_dtype=None,
         softcap=softcap > 0.0,

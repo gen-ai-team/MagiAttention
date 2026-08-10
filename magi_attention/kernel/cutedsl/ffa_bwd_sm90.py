@@ -141,8 +141,10 @@ class FFABwdSm90:
 
         # May be overridden in __call__ for varlen inputs.
         if qhead_per_kvhead > 1:
-            assert self.same_hdim_kv, "GQA backward requires head_dim == head_dim_v"
-            assert self.num_wg_mma == 2, "GQA backward assumes 2 warp groups"
+            assert self.num_wg_mma in (
+                2,
+                3,
+            ), "GQA backward assumes 2 or 3 MMA warp groups"
 
         # These are tuned for speed
         # Do we keep the LSE and dPsum in each thread, or split them across 8 threads that share
@@ -495,7 +497,7 @@ class FFABwdSm90:
                 (
                     (self.tile_m, self.tile_hdimv),
                     self.dO_stage,
-                    self.tile_hdim // wg_d_dKV,
+                    self.tile_hdimv // wg_d_dKV,
                 ),
             ]
         ]
@@ -537,8 +539,29 @@ class FFABwdSm90:
             cute.make_layout((self.num_threads_per_wg, self.num_wg_dQ)),
             cute.make_layout(128 // Float32.width),  # val_layout
         )
-        # dKVaccum for GQA epilogue - reuses sV+sK memory recast as f32
-        # TODO: assert that sVaccum and sKaccum don't overflow smem
+        # dKVaccum for GQA epilogue - reuses sQ/sV/sK memory recast as f32.
+        # Accumulators are staged sequentially (dK then dV), so only
+        # max(dK, dV) bytes must fit in the contiguous smem region.
+        sQ_bytes = cute.cosize(self.sQ_layout) * self.dtype.width // 8
+        sV_bytes = cute.cosize(self.sV_layout) * self.dtype.width // 8
+        sK_bytes = cute.cosize(self.sK_layout) * self.dtype.width // 8
+        dKaccum_bytes = self.tile_n * self.tile_hdim * (Float32.width // 8)
+        dVaccum_bytes = self.tile_n * self.tile_hdimv * (Float32.width // 8)
+        # SharedStorage order is sQ, sV, sK — contiguous from sV covers sV+sK;
+        # from sQ covers sQ+sV+sK (needed when asym hdim > hdimv).
+        self._gqa_dkvaccum_from_sQ = dKaccum_bytes > (sV_bytes + sK_bytes) or (
+            dVaccum_bytes > (sV_bytes + sK_bytes)
+        )
+        gqa_smem_bytes = (
+            sQ_bytes + sV_bytes + sK_bytes
+            if self._gqa_dkvaccum_from_sQ
+            else sV_bytes + sK_bytes
+        )
+        assert max(dKaccum_bytes, dVaccum_bytes) <= gqa_smem_bytes, (
+            f"GQA dKV accum ({max(dKaccum_bytes, dVaccum_bytes)} B) exceeds "
+            f"reusable smem ({gqa_smem_bytes} B) for "
+            f"tile_n={self.tile_n} hdim={self.tile_hdim} hdimv={self.tile_hdimv}"
+        )
 
         # --- Debug print ---
 
@@ -2107,6 +2130,7 @@ class FFABwdSm90:
                     acc_dK,
                     mdK,
                     sK,
+                    sQ,
                     seqlen_info,
                     tma_atom_dK,
                     tma_atom_dV,
@@ -2134,6 +2158,7 @@ class FFABwdSm90:
                         acc_dK,
                         mdK,
                         sK,
+                        sQ,
                         seqlen_info,
                         tma_atom_dK,
                         tma_atom_dV,
@@ -2452,6 +2477,7 @@ class FFABwdSm90:
         acc_dK: cute.Tensor,
         mdK: cute.Tensor,
         sK: cute.Tensor,
+        sQ: cute.Tensor,
         seqlen: SeqlenInfoQK,
         tma_atom_dK: cute.CopyAtom,
         tma_atom_dV: cute.CopyAtom,
@@ -2563,10 +2589,16 @@ class FFABwdSm90:
                 mdVaccum_cur, (self.tile_n * self.tile_hdimv,), (n_block,)
             )
             gdVaccum = cute.flat_divide(gdVaccum_, (sdVaccum_shape0,))
-            # These two overlap each other
-            # sdKaccum: (tileK*tileHD//num_wg=8192,num_wg=2):(1,8192)
-            # sdVaccum: (tileK*tileHD//num_wg=8192,num_wg=2):(1,8192)
-            sVaccum_ptr = cute.recast_ptr(sV.iterator, dtype=Float32)
+            # These two overlap each other (staged sequentially: dK then dV).
+            # sdKaccum: (tileK*tileHD//num_wg,num_wg):(1,...)
+            # sdVaccum: (tileK*tileHDv//num_wg,num_wg):(1,...)
+            # Prefer sV(+sK); fall back to sQ+sV+sK when asym dK needs more bytes.
+            accum_base = (
+                sQ.iterator
+                if const_expr(self._gqa_dkvaccum_from_sQ)
+                else sV.iterator
+            )
+            sVaccum_ptr = cute.recast_ptr(accum_base, dtype=Float32)
             sdKaccum = cute.make_tensor(sVaccum_ptr, sdKaccum_layout)
             sdVaccum = cute.make_tensor(sVaccum_ptr, sdVaccum_layout)
             tiled_copy_dKVaccum_r2s = cute.make_tiled_copy_tv(
