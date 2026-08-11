@@ -1,0 +1,140 @@
+{
+  "world_size": 2,
+  "seqlen": 4096,
+  "num_heads": 128,
+  "head_dims": [
+    {
+      "dq": 192,
+      "dk": 192,
+      "dv": 128
+    },
+    {
+      "dq": 192,
+      "dk": 192,
+      "dv": 192
+    }
+  ],
+  "chunk_size": 512,
+  "dtype": "bfloat16",
+  "seed": 42,
+  "warmup": 2,
+  "iters": 5,
+  "results": [
+    {
+      "mask": "full",
+      "head_dim_q": 192,
+      "head_dim_k": 192,
+      "head_dim_v": 128,
+      "correctness": {
+        "mask": "full",
+        "out_abs": 0.0009765625,
+        "out_rel": 0.0301204826682806,
+        "dq_abs": 0.0009765625,
+        "dq_rel": 0.033149171620607376,
+        "dk_abs": 0.001953125,
+        "dk_rel": 0.03846153989434242,
+        "dv_abs": 0.0009765625,
+        "dv_rel": 0.041916169226169586
+      },
+      "throughput": {
+        "magi_fwd_ms": 2.19187643378973,
+        "magi_1f1b_ms": 15.29699508100748,
+        "fa3_ulysses_fwd_ms": 2.4525148794054985,
+        "fa3_ulysses_1f1b_ms": 7.761719636619091,
+        "magi_fwd_tflops": 627.0378719952273,
+        "magi_1f1b_tflops": 314.46459556573143,
+        "fa3_ulysses_fwd_tflops": 560.4000800407616,
+        "fa3_ulysses_1f1b_tflops": 619.7548477305392,
+        "work_tflops_fwd": 1.37438953472,
+        "work_tflops_1f1b": 4.81036337152
+      }
+    },
+    {
+      "mask": "causal",
+      "head_dim_q": 192,
+      "head_dim_k": 192,
+      "head_dim_v": 128,
+      "correctness": {
+        "mask": "causal",
+        "out_abs": 0.00390625,
+        "out_rel": 0.08522727340459824,
+        "dq_abs": 0.0078125,
+        "dq_rel": 0.11450381577014923,
+        "dk_abs": 0.015625,
+        "dk_rel": 0.22891566157341003,
+        "dv_abs": 0.03125,
+        "dv_rel": 0.15662650763988495
+      },
+      "throughput": {
+        "magi_fwd_ms": 1.7837312072515488,
+        "magi_1f1b_ms": 10.697786696255207,
+        "fa3_ulysses_fwd_ms": 2.0911425352096558,
+        "fa3_ulysses_1f1b_ms": 5.785473063588142,
+        "magi_fwd_tflops": 385.35096360124703,
+        "magi_1f1b_tflops": 224.88473145217475,
+        "fa3_ulysses_fwd_tflops": 328.7019071854353,
+        "fa3_ulysses_1f1b_tflops": 415.8292436725901,
+        "work_tflops_fwd": 0.68736253952,
+        "work_tflops_1f1b": 2.40576888832
+      }
+    },
+    {
+      "mask": "full",
+      "head_dim_q": 192,
+      "head_dim_k": 192,
+      "head_dim_v": 192,
+      "correctness": {
+        "mask": "full",
+        "out_abs": 0.0009765625,
+        "out_rel": 0.030487805604934692,
+        "dq_abs": 0.00146484375,
+        "dq_rel": 0.04216867312788963,
+        "dk_abs": 0.00390625,
+        "dk_rel": 0.048192769289016724,
+        "dv_abs": 0.001953125,
+        "dv_rel": 0.030927835032343864
+      },
+      "throughput": {
+        "magi_fwd_ms": 2.3017119616270065,
+        "magi_1f1b_ms": 18.515697121620178,
+        "fa3_ulysses_fwd_ms": 2.8982585296034813,
+        "fa3_ulysses_1f1b_ms": 8.552705310285091,
+        "magi_fwd_tflops": 716.5394580902233,
+        "magi_1f1b_tflops": 311.759044658584,
+        "fa3_ulysses_fwd_tflops": 569.0546322275952,
+        "fa3_ulysses_1f1b_tflops": 674.9251653605244,
+        "work_tflops_fwd": 1.649267441664,
+        "work_tflops_1f1b": 5.772436045824
+      }
+    },
+    {
+      "mask": "causal",
+      "head_dim_q": 192,
+      "head_dim_k": 192,
+      "head_dim_v": 192,
+      "correctness": {
+        "mask": "causal",
+        "out_abs": 0.00390625,
+        "out_rel": 0.10303030163049698,
+        "dq_abs": 0.00390625,
+        "dq_rel": 0.17575757205486298,
+        "dk_abs": 0.015625,
+        "dk_rel": 0.17073170840740204,
+        "dv_abs": 0.03125,
+        "dv_rel": 0.17073170840740204
+      },
+      "throughput": {
+        "magi_fwd_ms": 1.888803020119667,
+        "magi_1f1b_ms": 12.05961611121893,
+        "fa3_ulysses_fwd_ms": 2.415146119892597,
+        "fa3_ulysses_1f1b_ms": 6.437366269528866,
+        "magi_fwd_tflops": 436.69723027642226,
+        "magi_1f1b_tflops": 239.3876089719247,
+        "fa3_ulysses_fwd_tflops": 341.5259394163202,
+        "fa3_ulysses_1f1b_tflops": 448.46332259346286,
+        "work_tflops_fwd": 0.8248350474239999,
+        "work_tflops_1f1b": 2.886922665984
+      }
+    }
+  ]
+}

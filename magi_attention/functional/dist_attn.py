@@ -1412,20 +1412,36 @@ class DistAttnRuntime:
                     partial_dk, partial_dv, need_concat=self.concat_dkv
                 )
             else:
-                assert k.shape == v.shape, (
-                    "The fused dKV buffer requires symmetric K/V shapes, "
-                    f"but got {k.shape=} and {v.shape=}."
-                )
-                dkv_shape = (k.shape[0] * 2, *k.shape[1:])
-                # init partial_dkv buffer
-                # NOTE: we initial partial dkv and chunk to dk, dv to avoid concat them back before return
-                # and we need to zero-initialize partial_dkv since it needs to be reduced
-                partial_dkv = torch.zeros(
-                    dkv_shape,
-                    dtype=self.hp_dtype,
-                    device=k.device,
-                )
-                partial_dk, partial_dv = self._maybe_chunk(partial_dkv, num_chunks=2)
+                if self.is_asymmetric_kv:
+                    # MLA-style (d_qk != d_v): cannot pack dK/dV along seqlen.
+                    # Allocate separate zero buffers; they are returned as a tuple
+                    # below when concat_dkv is False (always true for asymmetric).
+                    partial_dk = torch.zeros(
+                        k.shape,
+                        dtype=self.hp_dtype,
+                        device=k.device,
+                    )
+                    partial_dv = torch.zeros(
+                        v.shape,
+                        dtype=self.hp_dtype,
+                        device=v.device,
+                    )
+                    partial_dkv = None
+                else:
+                    assert k.shape == v.shape, (
+                        "The fused dKV buffer requires symmetric K/V shapes, "
+                        f"but got {k.shape=} and {v.shape=}."
+                    )
+                    dkv_shape = (k.shape[0] * 2, *k.shape[1:])
+                    # init partial_dkv buffer
+                    # NOTE: we initial partial dkv and chunk to dk, dv to avoid concat them back before return
+                    # and we need to zero-initialize partial_dkv since it needs to be reduced
+                    partial_dkv = torch.zeros(
+                        dkv_shape,
+                        dtype=self.hp_dtype,
+                        device=k.device,
+                    )
+                    partial_dk, partial_dv = self._maybe_chunk(partial_dkv, num_chunks=2)
 
                 (
                     partial_dq,
