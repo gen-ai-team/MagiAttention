@@ -365,9 +365,11 @@ class DynamicPersistentTileSchedulerFwd {
     // Helper function to calculate how many blocks are needed to compute the current batch
     auto get_num_m_blocks = [&](int bidb_start) {
       int batch_idx = lane + bidb_start;
+      if (batch_idx >= actual_num_batches || lane >= cutlass::NumThreadsPerWarp - 1) {
+        return 0;
+      }
       int2 range = get_batch_range(params.ranges, batch_idx);
-      int seqlen = batch_idx < actual_num_batches ? range.y - range.x : 0;
-      return batch_idx < actual_num_batches && lane < cutlass::NumThreadsPerWarp - 1 ? cute::ceil_div(seqlen * params.seqlen_scale_factor, kBlock) : 0;
+      return cute::ceil_div((range.y - range.x) * params.seqlen_scale_factor, kBlock);
     };
 
     // int num_m_blocks = get_num_m_blocks(current_work.bidb); // Different for each lane
