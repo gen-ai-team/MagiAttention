@@ -81,7 +81,7 @@ struct type_caster<at::ScalarType> {
 // }
 
 template <bool Deterministic, bool OuterStoreNeedReduction, bool BwdInnerLoopK, bool PackGQA, bool CatGQA, bool IndexSparse>
-std::tuple<Flash_bwd_params, at::Tensor, at::Tensor, at::Tensor, at::Tensor> prepare_mha_bwd(
+std::tuple<Flash_bwd_params, at::Tensor, at::Tensor, at::Tensor, at::Tensor, std::vector<at::Tensor>> prepare_mha_bwd(
     const at::Tensor& dout,
     const at::Tensor& q,
     const at::Tensor& k,
@@ -475,5 +475,17 @@ std::tuple<Flash_bwd_params, at::Tensor, at::Tensor, at::Tensor, at::Tensor> pre
   params.inner_indices_cnt = inner_indices_cnt;
   params.kv_covered_mask = kv_covered_mask_.has_value() ? static_cast<bool*>(kv_covered_mask_.value().data_ptr()) : nullptr;
 
-  return {params, dq, dk, dv, dsink};
+  // Same as prepare_mha_fwd: params points into these workspace tensors, keep them alive past the launch.
+  std::vector<at::Tensor> workspace{
+      sink,
+      dsink_reduce_buf,
+      dsink_reduce_cnt,
+      softmax_d,
+      softmax_lse_log2,
+      tile_count_semaphore,
+      determin_range_locks,
+      dq_determin_range_locks,
+      determin_conflict_state,
+      dq_determin_conflict_state};
+  return {params, dq, dk, dv, dsink, std::move(workspace)};
 }

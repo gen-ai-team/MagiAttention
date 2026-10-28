@@ -43,7 +43,7 @@ struct type_caster<at::ScalarType> {
 #include "flex_flash_common.hpp"
 
 template <int kBlockM, bool Deterministic, bool DisableAtomic, bool PackGQA, bool ReturnMaxLogits>
-std::tuple<Flash_fwd_params, at::Tensor, at::Tensor, std::optional<at::Tensor>> prepare_mha_fwd(
+std::tuple<Flash_fwd_params, at::Tensor, at::Tensor, std::optional<at::Tensor>, std::vector<at::Tensor>> prepare_mha_fwd(
     const at::Tensor& q,
     const at::Tensor& k,
     const at::Tensor& v,
@@ -374,5 +374,9 @@ std::tuple<Flash_fwd_params, at::Tensor, at::Tensor, std::optional<at::Tensor>> 
       /*index_sparse_indices=*/has_index_sparse ? index_sparse_indices.data_ptr() : nullptr,
       /*inner_indices_cnt=*/inner_indices_cnt);
 
-  return {params, out, softmax_lse, max_logits};
+  // params holds raw pointers into these workspace tensors. As locals they would be freed when this
+  // function returns, i.e. before the kernel is launched, and the caching allocator could hand their
+  // memory to the next allocation; return them so that the caller keeps them alive past the launch.
+  std::vector<at::Tensor> workspace{sink, range_locks, block_count_semaphore, determin_range_locks, determin_conflict_state};
+  return {params, out, softmax_lse, max_logits, std::move(workspace)};
 }

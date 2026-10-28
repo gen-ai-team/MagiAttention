@@ -103,8 +103,8 @@ std::vector<at::Tensor> mha_fwd(
     int const sm_margin) {
   _check_runtime_contract(q, out_type_, softcap);
 
-  // Parameter preparation
-  auto [params, out, softmax_lse, max_logit] = prepare_mha_fwd<kBlockM, kDeterministic, kDisableAtomic, kPackGQA, kReturnMaxLogits>(
+  // Parameter preparation (workspace: tensors params points into, alive until after the launch)
+  auto [params, out, softmax_lse, max_logit, workspace] = prepare_mha_fwd<kBlockM, kDeterministic, kDisableAtomic, kPackGQA, kReturnMaxLogits>(
       q, k, v, max_outer_range_width, sink_, out_, softmax_lse_, max_logit_,
       q_ranges_, k_ranges_, attn_type_map_, 
       merge_q_ranges_, qk_map_, unique_count_, 
