@@ -102,7 +102,8 @@ def _ffa_register_quota(
         (40, 232), (32, 160).
 
     bwd (producer, consumer) by mode:
-      - dense: (40, 232) at 2 MMA WGs, (40, 152) at 3 (symmetric kHeadDim=192).
+      - dense: (40, 232) at 2 MMA WGs, (32, 160) at 3 (symmetric kHeadDim=192), as in FA3;
+        (40, 152) at 3 spilled the MMA accumulators (hd192 backward ~2x slower).
         Asymmetric (192,128) stays at 2 MMA WGs (hdv not divisible by 3).
       - scatter + TMA inner (sparse_dx_tma_reduce=True): (40, 232). Inner Q/dO are
         loaded via TMA (1 warp, minimal regs), so producer matches Dense quota.
@@ -144,7 +145,9 @@ def _ffa_register_quota(
             else (3 if (head_dim == 192 and hdv == 192) else 2)
         )
         inner_use_scatter = block_sparse or index_sparse
-        budget = 168 * (1 + num_mma_wgs)
+        # mirrors kAvgRegsPerThread in FlashAttnBwdSm90: the register file split evenly over all WGs
+        num_wgs = 1 + num_mma_wgs
+        budget = (65536 // (num_wgs * 128) // 8 * 8) * num_wgs
         if inner_use_scatter:
             if sparse_dx_tma_reduce:
                 # TMA path: inner Q/dO loaded via TMA (1 warp), producer needs
@@ -155,7 +158,9 @@ def _ffa_register_quota(
                 producer_regs = 104
             consumer_regs = ((budget - producer_regs) // num_mma_wgs) // 8 * 8
         else:
-            producer_regs, consumer_regs = 40, (232 if num_mma_wgs == 2 else 152)
+            # 3 MMA WGs (hd192): 32 + 3 x 160 as in FA3; 40 + 3 x 152 spilled the MMA accumulators
+            # and made the backward about 2x slower
+            producer_regs, consumer_regs = (40, 232) if num_mma_wgs == 2 else (32, 160)
         _bpr = os.environ.get("MAGI_ATTENTION_FFA_BWD_PRODUCER_REGS")
         if _bpr is not None and int(_bpr) != 0:
             producer_regs = int(_bpr)
