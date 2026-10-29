@@ -31,7 +31,6 @@ from magi_attention.common.enum import AttnMaskType
 from magi_attention.config import DispatchConfig, DistAttnConfig
 from magi_attention.meta import make_global_bucket_from_qk_ranges
 
-
 # ---------------------------------------------------------------------------
 # Config defaults (overridable via CLI)
 # ---------------------------------------------------------------------------
@@ -47,9 +46,11 @@ DEFAULT_ITERS = 20
 
 
 def _dtype_from_str(name: str) -> torch.dtype:
-    return {"bfloat16": torch.bfloat16, "float16": torch.float16, "fp16": torch.float16}[
-        name
-    ]
+    return {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+    }[name]
 
 
 def parse_head_dims(spec: str) -> list[tuple[int, int, int]]:
@@ -201,8 +202,17 @@ def fa3_ulysses_fwd_bwd(
     out_local = all2all_head_to_seq(out_h.squeeze(0), group)
 
     out_local.backward(dout_local)
-    assert q_local.grad is not None and k_local.grad is not None and v_local.grad is not None
-    return out_local.detach(), q_local.grad.detach(), k_local.grad.detach(), v_local.grad.detach()
+    assert (
+        q_local.grad is not None
+        and k_local.grad is not None
+        and v_local.grad is not None
+    )
+    return (
+        out_local.detach(),
+        q_local.grad.detach(),
+        k_local.grad.detach(),
+        v_local.grad.detach(),
+    )
 
 
 def fa3_ulysses_out_only(
@@ -245,9 +255,7 @@ def make_magi_key(
 ):
     q_ranges = AttnRanges.from_ranges([[0, seqlen]])
     k_ranges = AttnRanges.from_ranges([[0, seqlen]])
-    attn_mask_type = [
-        AttnMaskType.CAUSAL if mask == "causal" else AttnMaskType.FULL
-    ]
+    attn_mask_type = [AttnMaskType.CAUSAL if mask == "causal" else AttnMaskType.FULL]
     pad_size = compute_pad_size(
         total_seqlen_q=seqlen, cp_size=world_size, chunk_size=chunk_size
     )
@@ -466,7 +474,9 @@ def run_one_case(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--out", type=str, required=True, help="JSON output path (rank0 writes)")
+    p.add_argument(
+        "--out", type=str, required=True, help="JSON output path (rank0 writes)"
+    )
     p.add_argument("--seqlen", type=int, default=DEFAULT_SEQLEN)
     p.add_argument("--num-heads", type=int, default=DEFAULT_NUM_HEADS)
     p.add_argument(

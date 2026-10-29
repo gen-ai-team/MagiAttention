@@ -217,8 +217,8 @@ def _build_mask_case(
             k_range=AttnRange(0, seqlen),
             window_size=(window_left, 0),
         )
-        q_ranges = q_ranges_obj.to_naive_ranges()
-        k_ranges = k_ranges_obj.to_naive_ranges()
+        q_ranges = [list(r) for r in q_ranges_obj.to_naive_ranges()]
+        k_ranges = [list(r) for r in k_ranges_obj.to_naive_ranges()]
         attn_type_map = [m.to_int_type() for m in mask_types]
         return (
             *_ranges_to_tensors(q_ranges, k_ranges, attn_type_map, device),
@@ -232,8 +232,8 @@ def _build_mask_case(
             k_range=AttnRange(0, seqlen),
             window_size=(window, window),
         )
-        q_ranges = q_ranges_obj.to_naive_ranges()
-        k_ranges = k_ranges_obj.to_naive_ranges()
+        q_ranges = [list(r) for r in q_ranges_obj.to_naive_ranges()]
+        k_ranges = [list(r) for r in k_ranges_obj.to_naive_ranges()]
         attn_type_map = [m.to_int_type() for m in mask_types]
         return (
             *_ranges_to_tensors(q_ranges, k_ranges, attn_type_map, device),
@@ -260,7 +260,10 @@ def _build_mask_case(
             _mask_varlen_causal if causal else _mask_varlen_full,
             document_id=document_id,
         )
-        return (*_ranges_to_tensors(q_ranges, k_ranges, attn_type_map, device), mask_mod)
+        return (
+            *_ranges_to_tensors(q_ranges, k_ranges, attn_type_map, device),
+            mask_mod,
+        )
 
     raise ValueError(f"Unknown mask case: {name}")
 
@@ -381,9 +384,7 @@ class TestFfaVsFlexAttentionHd192(unittest.TestCase):
         dk_f = _bhsd_to_thd(k_f.grad)
         dv_f = _bhsd_to_thd(v_f.grad)
 
-        test_case = (
-            f"[hd={head_dim}][{mask_name}][S={seqlen}][H={num_heads}][{dtype}]"
-        )
+        test_case = f"[hd={head_dim}][{mask_name}][S={seqlen}][H={num_heads}][{dtype}]"
         for name, actual, expected, rtol in [
             ("out", out_m, out_f, _FWD_RTOL),
             ("dq", dq_m, dq_f, _BWD_RTOL),

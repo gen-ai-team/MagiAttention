@@ -140,9 +140,7 @@ def _ffa_register_quota(
     else:
         # mirrors NumMmaWarpGroups in run_mha_bwd_ (flash_bwd_launch_template.h)
         num_mma_wgs = (
-            2
-            if bwd_inner_loop_k
-            else (3 if (head_dim == 192 and hdv == 192) else 2)
+            2 if bwd_inner_loop_k else (3 if (head_dim == 192 and hdv == 192) else 2)
         )
         inner_use_scatter = block_sparse or index_sparse
         # mirrors kAvgRegsPerThread in FlashAttnBwdSm90: the register file split evenly over all WGs
@@ -262,8 +260,16 @@ def sanity_check(
     assert hdv <= 192, "head_dim_v must be <= 192 for now"
     hd_rounded = round_up_headdim(head_dim)
     hdv_rounded = round_up_headdim(hdv)
-    assert hd_rounded in (64, 128, 192), "round_up_headdim(head_dim) must be 64, 128 or 192 for now"
-    assert hdv_rounded in (64, 128, 192), "round_up_headdim(head_dim_v) must be 64, 128 or 192 for now"
+    assert hd_rounded in (
+        64,
+        128,
+        192,
+    ), "round_up_headdim(head_dim) must be 64, 128 or 192 for now"
+    assert hdv_rounded in (
+        64,
+        128,
+        192,
+    ), "round_up_headdim(head_dim_v) must be 64, 128 or 192 for now"
     assert hd_rounded == hdv_rounded or (
         hd_rounded == 192 and hdv_rounded == 128
     ), "asymmetric head dims must be (192, 128) for now"
@@ -770,7 +776,11 @@ def get_ffa_jit_spec(
     )
 
     def extra_objects_cb():
-        common_uri = f"{head_dim_rounded}hd_{head_dim_v_rounded}hdv_common" if head_dim_v_rounded != head_dim_rounded else f"{head_dim_rounded}hd_common"
+        common_uri = (
+            f"{head_dim_rounded}hd_{head_dim_v_rounded}hdv_common"
+            if head_dim_v_rounded != head_dim_rounded
+            else f"{head_dim_rounded}hd_common"
+        )
         common_spec = gen_jit_spec(
             name=common_uri,
             sources=[str(x) for x in common_sources],

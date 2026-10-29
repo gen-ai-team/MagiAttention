@@ -276,8 +276,10 @@ struct CollectiveMainloopBwdSm90 {
   using AtomLayoutSdP =
       std::conditional_t<!SdP_swapAB, Layout<Shape<Int<AtomLayoutMSdP>, Int<AtomLayoutNSdP>, _1>>, Layout<Shape<Int<AtomLayoutNSdP>, Int<AtomLayoutMSdP>, _1>>>;
   using TiledMmaSdP = decltype(cute::make_tiled_mma(GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeAtomSdP>(), AtomLayoutSdP{}));
-  using TileShapeAtomdP = std::
-      conditional_t<!SdP_swapAB, Shape<Int<kBlockM>, Int<kBlockN / AtomLayoutNSdP>, Int<kHeadDimV>>, Shape<Int<kBlockN>, Int<kBlockM / AtomLayoutMSdP>, Int<kHeadDimV>>>;
+  using TileShapeAtomdP = std::conditional_t<
+      !SdP_swapAB,
+      Shape<Int<kBlockM>, Int<kBlockN / AtomLayoutNSdP>, Int<kHeadDimV>>,
+      Shape<Int<kBlockN>, Int<kBlockM / AtomLayoutMSdP>, Int<kHeadDimV>>>;
   using TiledMmadP = decltype(cute::make_tiled_mma(GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeAtomdP>(), AtomLayoutSdP{}));
   static_assert(
       stride<0>(typename TiledMmaSdP::ALayout{}) == 0 and stride<0>(typename TiledMmaSdP::BLayout{}) == 0,
@@ -289,8 +291,10 @@ struct CollectiveMainloopBwdSm90 {
   // Define TiledMmadK for dK=dS^TQ and TiledMmadV for dV = P^TdO
   using TileShapeAtomdK = std::
       conditional_t<!dKV_swapAB, Shape<Int<kBlockN>, Int<kHeadDim / AtomLayoutMdKV>, Int<kBlockM>>, Shape<Int<kHeadDim>, Int<kBlockN / AtomLayoutNdKV>, Int<kBlockM>>>;
-  using TileShapeAtomdV = std::
-      conditional_t<!dKV_swapAB, Shape<Int<kBlockN>, Int<kHeadDimV / AtomLayoutMdKV>, Int<kBlockM>>, Shape<Int<kHeadDimV>, Int<kBlockN / AtomLayoutNdKV>, Int<kBlockM>>>;
+  using TileShapeAtomdV = std::conditional_t<
+      !dKV_swapAB,
+      Shape<Int<kBlockN>, Int<kHeadDimV / AtomLayoutMdKV>, Int<kBlockM>>,
+      Shape<Int<kHeadDimV>, Int<kBlockN / AtomLayoutNdKV>, Int<kBlockM>>>;
   using AtomLayoutdKV =
       std::conditional_t<!dKV_swapAB, Layout<Shape<Int<AtomLayoutNdKV>, Int<AtomLayoutMdKV>, _1>>, Layout<Shape<Int<AtomLayoutMdKV>, Int<AtomLayoutNdKV>, _1>>>;
   using TiledMmadK = decltype(cute::make_tiled_mma(
@@ -568,10 +572,7 @@ struct CollectiveMainloopBwdSm90 {
   using ShapeQdOdO_TMA = std::conditional_t<
       PackGQA,
       cute::Shape<cute::Shape<cute::Int<PackGQAFactor>, int32_t>, Int<kHeadDimV>, int32_t>,
-      std::conditional_t<
-          CatGQA,
-          cute::Shape<int32_t, Int<kHeadDimV>, cute::Shape<cute::Int<PackGQAFactor>, int32_t>>,
-          ShapeQKV_V>>;
+      std::conditional_t<CatGQA, cute::Shape<int32_t, Int<kHeadDimV>, cute::Shape<cute::Int<PackGQAFactor>, int32_t>>, ShapeQKV_V>>;
 
   // Declare the TMA operand types for Q, dO, K, V, inner dQ and inner dKV.
   // TMA_QdO: non-packed path (flat shape), used when !PackGQA && !CatGQA
@@ -967,16 +968,9 @@ struct CollectiveMainloopBwdSm90 {
             args.shape_QdOdQ));
     // Create shape for dO (head_dim_v may differ from Q)
     auto const shape_dO_packed = cute::conditional_return<PackGQA>(
-        make_shape(
-            make_shape(cute::Int<PackGQAFactor>{}, get<0>(args.shape_dO)),
-            get<1>(args.shape_dO),
-            get<2>(args.shape_K)),
+        make_shape(make_shape(cute::Int<PackGQAFactor>{}, get<0>(args.shape_dO)), get<1>(args.shape_dO), get<2>(args.shape_K)),
         cute::conditional_return<CatGQA>(
-            make_shape(
-                get<0>(args.shape_dO),
-                get<1>(args.shape_dO),
-                make_shape(cute::Int<PackGQAFactor>{}, get<2>(args.shape_K))),
-            args.shape_dO));
+            make_shape(get<0>(args.shape_dO), get<1>(args.shape_dO), make_shape(cute::Int<PackGQAFactor>{}, get<2>(args.shape_K))), args.shape_dO));
     // Create stride for Q, dO and dQ
     auto const stride_Q = cute::conditional_return<PackGQA>(
         make_stride(

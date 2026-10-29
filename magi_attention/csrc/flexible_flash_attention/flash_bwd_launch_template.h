@@ -413,8 +413,7 @@ void run_mha_bwd_(Flash_bwd_params& params, cudaStream_t stream) {
   // since no more named barriers for more groups.
   // Symmetric hd192 uses 3 WGs; asymmetric (192,128) stays at 2 because
   // kHeadDimV=128 is not divisible by 3 (SmemLayoutAtomdO / InnerDv splits).
-  static constexpr int NumConsumerWarpGroups =
-      BwdInnerLoopK ? 2 : ((kHeadDim == 192 && kHeadDimV == 192) ? 3 : 2);
+  static constexpr int NumConsumerWarpGroups = BwdInnerLoopK ? 2 : ((kHeadDim == 192 && kHeadDimV == 192) ? 3 : 2);
 
   // NOTE: when BwdInnerLoopK is not supported (i.e. always false),
   // all the atom layouts are set specifically for tile size (128, 128, 64) and (64, 128, 64),
@@ -426,12 +425,10 @@ void run_mha_bwd_(Flash_bwd_params& params, cudaStream_t stream) {
   // the complementary split (MdKV = NumConsumer/NdKV) for both kHeadDim and kHeadDimV.
   // When NumConsumerWarpGroups=3, AtomLayoutMSdP must be 1 (3%2!=0) and
   // kBlockN must be divisible by 3 (see tile_size_bwd_sm90 for hd192 → n=96).
-  static constexpr int AtomLayoutMSdP =
-      (kBlockN <= 64 && NumConsumerWarpGroups % 2 == 0) ? 2 : 1;
+  static constexpr int AtomLayoutMSdP = (kBlockN <= 64 && NumConsumerWarpGroups % 2 == 0) ? 2 : 1;
   // Asym (192,128) @ 2 WGs: NdKV=2 → MdKV=1 so dV smem atoms use full hdv=128.
   // MdKV=2 (128/2=64) corrupts dV epilogue (dq/dk OK, dv rel-err >> 1).
-  static constexpr int AtomLayoutNdKV = kHeadDim <= 128 ? (kBlockN <= 64 ? 1 : 2)
-      : ((NumConsumerWarpGroups == 2 && kHeadDim != kHeadDimV) ? 2 : 1);
+  static constexpr int AtomLayoutNdKV = kHeadDim <= 128 ? (kBlockN <= 64 ? 1 : 2) : ((NumConsumerWarpGroups == 2 && kHeadDim != kHeadDimV) ? 2 : 1);
   static constexpr int AtomLayoutMdQ = kHeadDim <= 64 ? (kBlockM <= 64 ? 1 : 2) : 1;
   static_assert(NumConsumerWarpGroups % AtomLayoutMSdP == 0);
   static_assert(NumConsumerWarpGroups % AtomLayoutNdKV == 0);
