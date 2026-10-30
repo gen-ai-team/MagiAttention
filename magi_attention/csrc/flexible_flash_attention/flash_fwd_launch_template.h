@@ -43,6 +43,7 @@ template <
     int kBlockM,
     int kBlockN,
     int kHeadDim,
+    int kHeadDimV,
     int ClusterM,
     typename Element,
     typename ElementOut,
@@ -74,7 +75,7 @@ void run_flash_fwd(Flash_fwd_params& params, cudaStream_t stream) {
 
   // get tile shape
   using TileShape_MNK = cute::Shape<Int<kBlockM>, Int<kBlockN>, Int<kHeadDim>>;
-  using TileShape_MNK_PV = cute::Shape<Int<kBlockM>, Int<kHeadDim>, Int<kBlockN>>;
+  using TileShape_MNK_PV = cute::Shape<Int<kBlockM>, Int<kHeadDimV>, Int<kBlockN>>;
 
   // get cluster shape
   using ClusterShape = cute::Shape<Int<ClusterM>, _1, _1>;
@@ -84,6 +85,7 @@ void run_flash_fwd(Flash_fwd_params& params, cudaStream_t stream) {
       kStages,
       ClusterShape,
       TileShape_MNK,
+      kHeadDimV,
       Element,
       float,
       cutlass::arch::Sm90,
@@ -138,7 +140,7 @@ void run_flash_fwd(Flash_fwd_params& params, cudaStream_t stream) {
         {params.total_k, params.d, params.h_kv}, // shape_K
         {params.k_row_stride, _1{}, params.k_head_stride}, // stride_K
         static_cast<Element*>(params.v_ptr), // V
-        params.d, // headdim_v
+        params.d_v, // headdim_v
         v_strides, // stride_V
         params.scale_softmax,
         params.softcap,
@@ -152,7 +154,7 @@ void run_flash_fwd(Flash_fwd_params& params, cudaStream_t stream) {
 
   typename CollectiveEpilogue::Arguments epilogue_args{
       static_cast<ElementOut*>(params.o_ptr), // O
-      {params.total_q, params.d, params.h_qo}, // shape_O
+      {params.total_q, params.d_v, params.h_qo}, // shape_O
       {params.o_row_stride, _1{}, params.o_head_stride}, // stride_O
       static_cast<float*>(params.softmax_lse_ptr), // LSE
       {params.h_qo, _1{}}, // stride_LSE
@@ -215,6 +217,7 @@ template <
     typename T,
     typename T_out,
     int kHeadDim,
+    int kHeadDimV,
     bool Has_softcap,
     bool DisableFwdAtomicReduction,
     bool PackGQA,
@@ -249,6 +252,7 @@ void run_mha_fwd_(Flash_fwd_params& params, cudaStream_t stream) {
         /*kBlockM=*/kBlockM,
         /*kBlockN=*/kBlockN,
         /*kHeadDim=*/kHeadDim,
+        /*kHeadDimV=*/kHeadDimV,
         /*ClusterM=*/ClusterM,
         /*Element=*/T,
         /*ElementOut=*/T_out,

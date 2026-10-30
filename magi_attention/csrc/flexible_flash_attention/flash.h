@@ -74,6 +74,7 @@ struct Flash_fwd_params : public Qkv_params {
 
   // Dimensions params
   int b, d, d_rounded;
+  int d_v, d_v_rounded;
   int total_q, total_k, total_sink;
 
   // The scaling factors for the kernel.
@@ -196,8 +197,9 @@ struct Flash_bwd_params : public Flash_fwd_params {
 // JIT instantiation TU includes directly; no forward declarations are kept here to avoid
 // maintaining a second copy of their template parameter lists.
 
+// Fwd postprocess tiles O along head_dim_v (params.d_v); kHeadDim here is that V/O dim.
 template <typename T_out, uint32_t kHeadDim>
 void run_flash_fwd_post_process_(Flash_fwd_params& params, cudaStream_t stream);
 
-template <typename TDkv, uint32_t kHeadDim>
+template <typename TDkv, uint32_t kHeadDim, uint32_t kHeadDimV>
 void run_flash_bwd_dkv_postprocess_(Flash_bwd_params& params, cudaStream_t stream);

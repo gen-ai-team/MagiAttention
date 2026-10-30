@@ -86,6 +86,7 @@ def _ffa_register_quota(
     index_sparse: bool,
     sparse_dx_tma_reduce: bool,
     sparse_k_block_size: int = 1,
+    head_dim_v: int | None = None,
 ) -> tuple[int, int]:
     """Select the setmaxnreg quotas (producer/load WG, consumer/mma WG) for one variant.
 
@@ -101,7 +102,9 @@ def _ffa_register_quota(
         (40, 232), (32, 160).
 
     bwd (producer, consumer) by mode:
-      - dense: (40, 232) at 2 MMA WGs, (40, 152) at 3 (kHeadDim=192).
+      - dense: (40, 232) at 2 MMA WGs, (32, 160) at 3 (symmetric kHeadDim=192), as in FA3;
+        (40, 152) at 3 spilled the MMA accumulators (hd192 backward ~2x slower).
+        Asymmetric (192,128) stays at 2 MMA WGs (hdv not divisible by 3).
       - scatter + TMA inner (sparse_dx_tma_reduce=True): (40, 232). Inner Q/dO are
         loaded via TMA (1 warp, minimal regs), so producer matches Dense quota.
         cuobjdump verified: pr=56→STACK=32 (consumer spills), pr=40→STACK=0.
@@ -116,6 +119,7 @@ def _ffa_register_quota(
     the given value and the consumer is rederived from the weighted budget.
     """
     kblock_n_fwd = 128  # Default FWD tile N
+    hdv = head_dim if head_dim_v is None else head_dim_v
     if direction == "fwd":
         assert kblock_m is not None
         # CpAsync scatter path is used when kInnerTilesContiguous is false:
@@ -135,9 +139,13 @@ def _ffa_register_quota(
             ]
     else:
         # mirrors NumMmaWarpGroups in run_mha_bwd_ (flash_bwd_launch_template.h)
-        num_mma_wgs = 2 if bwd_inner_loop_k else (3 if head_dim == 192 else 2)
+        num_mma_wgs = (
+            2 if bwd_inner_loop_k else (3 if (head_dim == 192 and hdv == 192) else 2)
+        )
         inner_use_scatter = block_sparse or index_sparse
-        budget = 168 * (1 + num_mma_wgs)
+        # mirrors kAvgRegsPerThread in FlashAttnBwdSm90: the register file split evenly over all WGs
+        num_wgs = 1 + num_mma_wgs
+        budget = (65536 // (num_wgs * 128) // 8 * 8) * num_wgs
         if inner_use_scatter:
             if sparse_dx_tma_reduce:
                 # TMA path: inner Q/dO loaded via TMA (1 warp), producer needs
@@ -148,7 +156,9 @@ def _ffa_register_quota(
                 producer_regs = 104
             consumer_regs = ((budget - producer_regs) // num_mma_wgs) // 8 * 8
         else:
-            producer_regs, consumer_regs = 40, (232 if num_mma_wgs == 2 else 152)
+            # 3 MMA WGs (hd192): 32 + 3 x 160 as in FA3; 40 + 3 x 152 spilled the MMA accumulators
+            # and made the backward about 2x slower
+            producer_regs, consumer_regs = (40, 232) if num_mma_wgs == 2 else (32, 160)
         _bpr = os.environ.get("MAGI_ATTENTION_FFA_BWD_PRODUCER_REGS")
         if _bpr is not None and int(_bpr) != 0:
             producer_regs = int(_bpr)
@@ -164,6 +174,7 @@ def get_ffa_uri(
     arch_sm_num: str,
     direction: str,
     head_dim: int,
+    head_dim_v: int,
     compute_dtype: torch.dtype,
     output_dtype: torch.dtype,
     softcap: bool,
@@ -188,10 +199,13 @@ def get_ffa_uri(
     def _dtype_name(dt: torch.dtype) -> str:
         return str(dt).split(".")[-1]
 
+    hdv = head_dim_v
+    hd_suffix = f"{head_dim}hd_" if hdv == head_dim else f"{head_dim}hd_{hdv}hdv_"
+
     return (
         f"flex_flash_attn_sm_{arch_sm_num}_"
         f"{direction}_"
-        f"{head_dim}hd_"
+        f"{hd_suffix}"
         f"compute_{_dtype_name(compute_dtype)}"
         f"{f'_out_{_dtype_name(output_dtype)}' if output_dtype is not None else ''}"
         f"{f'_dq_{_dtype_name(dq_dtype)}' if dq_dtype is not None else ''}"
@@ -237,14 +251,28 @@ def sanity_check(
     dkv_dtype: torch.dtype | None = None,
     pack_gqa: bool = False,
     cat_gqa: bool = False,
+    head_dim_v: int | None = None,
 ):
     check_cuda_compute_capability(arch)
     assert direction in ("fwd", "bwd"), "direction must be either fwd or bwd"
-    assert head_dim <= 128, "head_dim must be <= 128 for now"
-    assert round_up_headdim(head_dim) in (
+    hdv = head_dim if head_dim_v is None else head_dim_v
+    assert head_dim <= 192, "head_dim must be <= 192 for now"
+    assert hdv <= 192, "head_dim_v must be <= 192 for now"
+    hd_rounded = round_up_headdim(head_dim)
+    hdv_rounded = round_up_headdim(hdv)
+    assert hd_rounded in (
         64,
         128,
-    ), "round_up_headdim(head_dim) must be 64 or 128 for now"
+        192,
+    ), "round_up_headdim(head_dim) must be 64, 128 or 192 for now"
+    assert hdv_rounded in (
+        64,
+        128,
+        192,
+    ), "round_up_headdim(head_dim_v) must be 64, 128 or 192 for now"
+    assert hd_rounded == hdv_rounded or (
+        hd_rounded == 192 and hdv_rounded == 128
+    ), "asymmetric head dims must be (192, 128) for now"
     assert compute_dtype in (
         torch.float16,
         torch.bfloat16,
@@ -325,6 +353,7 @@ def get_ffa_jit_spec(
     dq_dtype: torch.dtype | None = None,
     dkv_dtype: torch.dtype | None = None,
     sparse_k_block_size: int = 1,
+    head_dim_v: int | None = None,
 ) -> tuple[JitSpec, str]:
     # TODO: add more sanity checks for the combinations of options
     sanity_check(
@@ -343,10 +372,14 @@ def get_ffa_jit_spec(
         dkv_dtype=dkv_dtype,
         pack_gqa=pack_gqa,
         cat_gqa=cat_gqa,
+        head_dim_v=head_dim_v,
     )
 
     # Convert arch to SM number
     arch_sm_num = f"{arch[0]}{arch[1]}"
+    hdv = head_dim if head_dim_v is None else head_dim_v
+    head_dim_rounded = round_up_headdim(head_dim)
+    head_dim_v_rounded = round_up_headdim(hdv)
 
     if ref_block_size is not None:
         kblock_m, kblock_n = ref_block_size
@@ -382,7 +415,8 @@ def get_ffa_jit_spec(
     uri = get_ffa_uri(
         arch_sm_num=arch_sm_num,
         direction=direction,
-        head_dim=head_dim,
+        head_dim=head_dim_rounded,
+        head_dim_v=head_dim_v_rounded,
         compute_dtype=compute_dtype,
         output_dtype=output_dtype,
         softcap=softcap,
@@ -603,6 +637,7 @@ def get_ffa_jit_spec(
         index_sparse=index_sparse,
         sparse_dx_tma_reduce=extra_template_args.get("inner_store_mode", "0") == "1",
         sparse_k_block_size=sparse_k_block_size,
+        head_dim_v=head_dim_v_rounded,
     )
     extra_template_args[f"{direction}_producer_regs"] = str(_producer_regs)
     extra_template_args[f"{direction}_consumer_regs"] = str(_consumer_regs)
@@ -678,7 +713,8 @@ def get_ffa_jit_spec(
         out_t=out_t,
         dq_t=dq_t,
         dkv_t=dkv_t,
-        head_dim=head_dim,
+        head_dim=head_dim_rounded,
+        head_dim_v=head_dim_v_rounded,
         has_softcap=str(has_softcap).lower(),
         disable_atomic=str(disable_atomic).lower(),
         disable_dq_atomic=str(disable_dq_atomic).lower(),
@@ -729,7 +765,7 @@ def get_ffa_jit_spec(
     ]
 
     # Disable other head dimensions to reduce compile time
-    disable_dims = {64, 128, 192, 256} - {head_dim}
+    disable_dims = {64, 128, 192, 256} - {head_dim_rounded, head_dim_v_rounded}
     extra_cflags = []
     for d in sorted(disable_dims):
         extra_cflags.append(f"-DFLASHATTENTION_DISABLE_HDIM{d}")
@@ -740,7 +776,11 @@ def get_ffa_jit_spec(
     )
 
     def extra_objects_cb():
-        common_uri = f"{head_dim}hd_common"
+        common_uri = (
+            f"{head_dim_rounded}hd_{head_dim_v_rounded}hdv_common"
+            if head_dim_v_rounded != head_dim_rounded
+            else f"{head_dim_rounded}hd_common"
+        )
         common_spec = gen_jit_spec(
             name=common_uri,
             sources=[str(x) for x in common_sources],
@@ -816,6 +856,7 @@ def get_ffa_jit_mod(
     dq_dtype: torch.dtype | None = None,
     dkv_dtype: torch.dtype | None = None,
     sparse_k_block_size: int = 1,
+    head_dim_v: int | None = None,
     _env_snapshot: tuple[tuple[str, str | None], ...] = (),
 ) -> Any:
     assert torch.cuda.is_available(), "CUDA is not available"
@@ -838,6 +879,7 @@ def get_ffa_jit_mod(
         arch=arch,
         direction=direction,
         head_dim=head_dim,
+        head_dim_v=head_dim_v,
         compute_dtype=compute_dtype,
         output_dtype=output_dtype,
         softcap=softcap,

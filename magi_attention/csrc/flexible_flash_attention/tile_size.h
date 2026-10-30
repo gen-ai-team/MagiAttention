@@ -89,8 +89,11 @@ constexpr std::tuple<int, int> tile_size_bwd_sm90(int headdim, int element_size 
   // constraints with the default hd=128 swapAB flags (SdP_swapAB=true → M=kBlockN=64≥64).
   if constexpr (IndexSparseLoopQ) {
     static_assert(!BwdInnerLoopK, "IndexSparseLoopQ requires BwdInnerLoopK=false (LoopQ)");
+    // hd192 uses 3 consumer WGs → kBlockN must be divisible by 3.
     if (headdim <= 128)
       return {64, 64};
+    else if (headdim <= 192)
+      return {64, 96};
     else
       return {64, 64};
   }
@@ -106,7 +109,9 @@ constexpr std::tuple<int, int> tile_size_bwd_sm90(int headdim, int element_size 
     else
       return {64, 128};
   } else if (headdim <= 192) {
-    return {64, 64};
+    // Prefer {64, 96} over {64, 64}: with NumConsumerWarpGroups=3 for hd192,
+    // AtomLayoutNSdP = 3 requires kBlockN % 3 == 0 (64 is not divisible by 3).
+    return {64, 96};
   } else {
     return {64, 64};
   }

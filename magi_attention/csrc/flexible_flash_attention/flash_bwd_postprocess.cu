@@ -16,17 +16,20 @@
 
 #include "flash_bwd_postprocess_launch_template.h"
 
-template void run_flash_bwd_dkv_postprocess_<float, 64>(Flash_bwd_params& params, cudaStream_t stream);
-template void run_flash_bwd_dkv_postprocess_<float, 128>(Flash_bwd_params& params, cudaStream_t stream);
-template void run_flash_bwd_dkv_postprocess_<float, 192>(Flash_bwd_params& params, cudaStream_t stream);
-template void run_flash_bwd_dkv_postprocess_<float, 256>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<float, 64, 64>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<float, 128, 128>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<float, 192, 192>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<float, 192, 128>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<float, 256, 256>(Flash_bwd_params& params, cudaStream_t stream);
 
-template void run_flash_bwd_dkv_postprocess_<cutlass::half_t, 64>(Flash_bwd_params& params, cudaStream_t stream);
-template void run_flash_bwd_dkv_postprocess_<cutlass::half_t, 128>(Flash_bwd_params& params, cudaStream_t stream);
-template void run_flash_bwd_dkv_postprocess_<cutlass::half_t, 192>(Flash_bwd_params& params, cudaStream_t stream);
-template void run_flash_bwd_dkv_postprocess_<cutlass::half_t, 256>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::half_t, 64, 64>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::half_t, 128, 128>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::half_t, 192, 192>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::half_t, 192, 128>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::half_t, 256, 256>(Flash_bwd_params& params, cudaStream_t stream);
 
-template void run_flash_bwd_dkv_postprocess_<cutlass::bfloat16_t, 64>(Flash_bwd_params& params, cudaStream_t stream);
-template void run_flash_bwd_dkv_postprocess_<cutlass::bfloat16_t, 128>(Flash_bwd_params& params, cudaStream_t stream);
-template void run_flash_bwd_dkv_postprocess_<cutlass::bfloat16_t, 192>(Flash_bwd_params& params, cudaStream_t stream);
-template void run_flash_bwd_dkv_postprocess_<cutlass::bfloat16_t, 256>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::bfloat16_t, 64, 64>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::bfloat16_t, 128, 128>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::bfloat16_t, 192, 192>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::bfloat16_t, 192, 128>(Flash_bwd_params& params, cudaStream_t stream);
+template void run_flash_bwd_dkv_postprocess_<cutlass::bfloat16_t, 256, 256>(Flash_bwd_params& params, cudaStream_t stream);

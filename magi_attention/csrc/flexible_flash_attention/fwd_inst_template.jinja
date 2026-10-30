@@ -13,6 +13,7 @@ static constexpr int kArch = {{ arch_sm_num }};
 using TCompute = {{ compute_t }};
 using TOut     = {{ out_t }};
 static constexpr int kHeadDim = {{ head_dim }};
+static constexpr int kHeadDimV = {{ head_dim_v | default(head_dim) }};
 static constexpr bool kHasSoftcap = {{ has_softcap }};
 static constexpr bool kDisableAtomic = {{ disable_atomic }};
 static constexpr bool kDeterministic = {{ deterministic }};
@@ -52,6 +53,7 @@ static constexpr int kBlockN = std::get<1>(tile_size_fwd_sm90(kHeadDim, /*elemen
 // Runtime contract checks to ensure consistency with compile-time constraints
 static inline void _check_runtime_contract(
     const at::Tensor& q,
+    const at::Tensor& v,
     std::optional<at::ScalarType> out_type_opt,
     float softcap) {
   TORCH_CHECK(!kCatGQA, "cat_gqa is not supported in fwd, please set cat_gqa to False.");
@@ -59,6 +61,8 @@ static inline void _check_runtime_contract(
               "JIT-FFA only supports fp16/bf16 for compute");
   TORCH_CHECK(q.size(2) == kHeadDim,
               "HeadDim mismatch: compiled=", kHeadDim, ", runtime=", q.size(2));
+  TORCH_CHECK(v.size(2) == kHeadDimV,
+              "HeadDimV mismatch: compiled=", kHeadDimV, ", runtime=", v.size(2));
   TORCH_CHECK(((softcap > 0.f) == kHasSoftcap),
               "softcap mismatch with compiled variant");
 
@@ -101,7 +105,7 @@ std::vector<at::Tensor> mha_fwd(
     std::optional<at::ScalarType> out_type_,
     const std::string& sink_layout_,
     int const sm_margin) {
-  _check_runtime_contract(q, out_type_, softcap);
+  _check_runtime_contract(q, v, out_type_, softcap);
 
   // Parameter preparation
   auto [params, out, softmax_lse, max_logit] = prepare_mha_fwd<kBlockM, kDeterministic, kDisableAtomic, kPackGQA, kReturnMaxLogits>(
@@ -122,7 +126,7 @@ std::vector<at::Tensor> mha_fwd(
   if constexpr (kProfileMode) 
     MagiEvents::start("fwd_run");
   
-  run_mha_fwd_<kArch, kBlockM, kBlockN, TCompute, TOut, kHeadDim, kHasSoftcap, kDisableAtomic, kPackGQA, kPackGQAFactor, kDeterministic, kRangeMerge, kSwapAB, kBlockSparse, kIndexSparse, kIntraWGOverlap, kInnerDirMaxToMin, kMaskMode, kReturnMaxLogits, kFwdProducerRegs, kFwdConsumerRegs, kSparseKBlockSize, kInnerLoadMode, kOuterStoreMode, kProfileMode>(params, stream);
+  run_mha_fwd_<kArch, kBlockM, kBlockN, TCompute, TOut, kHeadDim, kHeadDimV, kHasSoftcap, kDisableAtomic, kPackGQA, kPackGQAFactor, kDeterministic, kRangeMerge, kSwapAB, kBlockSparse, kIndexSparse, kIntraWGOverlap, kInnerDirMaxToMin, kMaskMode, kReturnMaxLogits, kFwdProducerRegs, kFwdConsumerRegs, kSparseKBlockSize, kInnerLoadMode, kOuterStoreMode, kProfileMode>(params, stream);
   
   if constexpr (kProfileMode) 
     MagiEvents::stop("fwd_run");

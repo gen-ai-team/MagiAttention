@@ -119,6 +119,13 @@ class FFABwdPostProcess:
                 self.tile_m // atom_layout_dQ[0],
                 self.tile_hdim // atom_layout_dQ[1],
             )
+            # Match ffa_bwd_sm90: GMMA M-mode is always 64. Full reverse of
+            # tiler_mn_dQ under swapAB can put head_dim (e.g. 192) into M and
+            # fail OpError / scramble the accumulator remap.
+            tiler_mn = (
+                64,
+                tiler_mn_dQ[1] if not self.dQ_swapAB else tiler_mn_dQ[0],
+            )
             tiled_mma = sm90_utils_basic.make_trivial_tiled_mma(
                 self.dtype,
                 self.dtype,
@@ -129,7 +136,7 @@ class FFABwdPostProcess:
                     atom_layout_dQ if not self.dQ_swapAB else atom_layout_dQ[::-1]
                 )
                 + (1,),
-                tiler_mn=tiler_mn_dQ if not self.dQ_swapAB else tiler_mn_dQ[::-1],
+                tiler_mn=tiler_mn,
             )
         else:
             cta_group = tcgen05.CtaGroup.ONE

@@ -41,7 +41,7 @@ void run_flash_fwd_post_process(Flash_fwd_params& params, cudaStream_t stream) {
   typename PostprocessKernel::Arguments postprocess_args{
       // O
       static_cast<T_out*>(params.o_ptr),
-      {params.total_q, params.d, params.h_qo}, // shape_O: [sq, hd, nhq]
+      {params.total_q, params.d_v, params.h_qo}, // shape_O: [sq, hd, nhq]
       {params.o_row_stride, _1{}, params.o_head_stride}, // stride_O: [nhq*hd, 1, hd]
       // LSE
       static_cast<float*>(params.softmax_lse_ptr),

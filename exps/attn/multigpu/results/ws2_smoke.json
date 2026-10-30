@@ -1,0 +1,48 @@
+{
+  "world_size": 2,
+  "seqlen": 4096,
+  "num_heads": 128,
+  "head_dims": [
+    {
+      "dq": 192,
+      "dk": 192,
+      "dv": 128
+    }
+  ],
+  "chunk_size": 512,
+  "dtype": "bfloat16",
+  "seed": 42,
+  "warmup": 1,
+  "iters": 2,
+  "results": [
+    {
+      "mask": "full",
+      "head_dim_q": 192,
+      "head_dim_k": 192,
+      "head_dim_v": 128,
+      "correctness": {
+        "mask": "full",
+        "out_abs": 0.0009765625,
+        "out_rel": 0.0301204826682806,
+        "dq_abs": 0.0009765625,
+        "dq_rel": 0.033149171620607376,
+        "dk_abs": 0.001953125,
+        "dk_rel": 0.03846153989434242,
+        "dv_abs": 0.0009765625,
+        "dv_rel": 0.041916169226169586
+      },
+      "throughput": {
+        "magi_fwd_ms": 2.2432240657508373,
+        "magi_1f1b_ms": 15.358928591012955,
+        "fa3_ulysses_fwd_ms": 2.5094388984143734,
+        "fa3_ulysses_1f1b_ms": 7.785595953464508,
+        "magi_fwd_tflops": 612.6849099490083,
+        "magi_1f1b_tflops": 313.1965451245546,
+        "fa3_ulysses_fwd_tflops": 547.6879853852703,
+        "fa3_ulysses_1f1b_tflops": 617.8542272514719,
+        "work_tflops_fwd": 1.37438953472,
+        "work_tflops_1f1b": 4.81036337152
+      }
+    }
+  ]
+}

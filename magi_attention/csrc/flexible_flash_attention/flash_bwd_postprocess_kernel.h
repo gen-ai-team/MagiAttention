@@ -36,25 +36,26 @@ using namespace cute;
  * Threads are parallel in head_dim dimension,
  * so when zeroing a row, threads access contiguous dK/dV elements (stride 1).
  */
-template <typename TDkv, uint32_t kBlockN, uint32_t kHeadDim, class ArchTag_>
+template <typename TDkv, uint32_t kBlockN, uint32_t kHeadDim, uint32_t kHeadDimV, class ArchTag_>
 class FlashAttnBwdDkvPostprocess {
  public:
   using ArchTag = ArchTag_;
   using TileShapeNK = cute::Shape<Int<kBlockN>, Int<kHeadDim>>;
 
-  // (total_k, head_dim, num_heads_kv)
   using ShapeDkv = cute::Shape<int32_t, int32_t, int32_t>;
   using StrideDkv = cute::Stride<int64_t, _1, int64_t>;
 
   static constexpr int SharedStorageSize = kBlockN * sizeof(int);
-  static constexpr uint32_t MaxThreadsPerBlock = kHeadDim;
+  static constexpr uint32_t MaxThreadsPerBlock = kHeadDim > kHeadDimV ? kHeadDim : kHeadDimV;
   static constexpr uint32_t MinBlocksPerMultiprocessor = 1;
 
   struct Params {
     TDkv* ptr_dK;
     TDkv* ptr_dV;
-    ShapeDkv shape_dkv;
-    StrideDkv stride_dkv;
+    ShapeDkv shape_dK;
+    ShapeDkv shape_dV;
+    StrideDkv stride_dK;
+    StrideDkv stride_dV;
     int2* k_ranges;
     int num_k_ranges;
     int* num_k_ranges_ptr;
@@ -68,9 +69,11 @@ class FlashAttnBwdDkvPostprocess {
     int32_t const thread_idx = threadIdx.x;
 
     int32_t const offset_n = n_block * kBlockN;
-    int32_t const total_k = cute::get<0>(params.shape_dkv);
-    int64_t const dk_row_stride = cute::get<0>(params.stride_dkv);
-    int64_t const dk_head_stride = cute::get<2>(params.stride_dkv);
+    int32_t const total_k = cute::get<0>(params.shape_dK);
+    int64_t const dk_row_stride = cute::get<0>(params.stride_dK);
+    int64_t const dk_head_stride = cute::get<2>(params.stride_dK);
+    int64_t const dv_row_stride = cute::get<0>(params.stride_dV);
+    int64_t const dv_head_stride = cute::get<2>(params.stride_dV);
 
     // Shared memory for mask: [kBlockN]
     int* const mask_shmem = reinterpret_cast<int*>(smem_buf);
@@ -118,9 +121,13 @@ class FlashAttnBwdDkvPostprocess {
 
       // Zero dK and dV for this row: thread tid writes [tid] - contiguous, coalesced
       TDkv* dK_row = params.ptr_dK + row_idx * dk_row_stride + bidh * dk_head_stride;
-      TDkv* dV_row = params.ptr_dV + row_idx * dk_row_stride + bidh * dk_head_stride;
-      dK_row[thread_idx] = TDkv(0);
-      dV_row[thread_idx] = TDkv(0);
+      TDkv* dV_row = params.ptr_dV + row_idx * dv_row_stride + bidh * dv_head_stride;
+      if (thread_idx < kHeadDim) {
+        dK_row[thread_idx] = TDkv(0);
+      }
+      if (thread_idx < kHeadDimV) {
+        dV_row[thread_idx] = TDkv(0);
+      }
     }
   }
 };
