@@ -2594,9 +2594,7 @@ class FFABwdSm90:
             # sdVaccum: (tileK*tileHDv//num_wg,num_wg):(1,...)
             # Prefer sV(+sK); fall back to sQ+sV+sK when asym dK needs more bytes.
             accum_base = (
-                sQ.iterator
-                if const_expr(self._gqa_dkvaccum_from_sQ)
-                else sV.iterator
+                sQ.iterator if const_expr(self._gqa_dkvaccum_from_sQ) else sV.iterator
             )
             sVaccum_ptr = cute.recast_ptr(accum_base, dtype=Float32)
             sdKaccum = cute.make_tensor(sVaccum_ptr, sdKaccum_layout)

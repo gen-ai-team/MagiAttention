@@ -116,8 +116,8 @@ class FlashAttnBwdSm90 {
       // addresses into that region. Pad by the same byte count (Stages_V=2, bf16
       // → factor 4) so dynamic smem covers those stores.
       static constexpr int kPadBytes = (CollectiveMainloop::kHeadDim > CollectiveMainloop::kHeadDimV)
-          ? (CollectiveMainloop::kBlockN * (CollectiveMainloop::kHeadDim - CollectiveMainloop::kHeadDimV) *
-             CollectiveMainloop::kStages_V * int(sizeof(typename CollectiveMainloop::Element)))
+          ? (CollectiveMainloop::kBlockN * (CollectiveMainloop::kHeadDim - CollectiveMainloop::kHeadDimV) * CollectiveMainloop::kStages_V *
+             int(sizeof(typename CollectiveMainloop::Element)))
           : 0;
       alignas(128) char asym_smem_pad[kPadBytes];
     } tensors;
@@ -418,8 +418,7 @@ class FlashAttnBwdSm90 {
             tdKrdK(i) *= params.mainloop.softmax_scale;
           }
           ++work_idx;
-          epilogue.store_dkv(
-              params.epilogue, tdKrdK, tdVrdV, shared_storage, tiled_mma_dK, tiled_mma_dV, threadIdx.x - NumCopyThreads, epilogue_block_coord, det_msg);
+          epilogue.store_dkv(params.epilogue, tdKrdK, tdVrdV, shared_storage, tiled_mma_dK, tiled_mma_dV, threadIdx.x - NumCopyThreads, epilogue_block_coord, det_msg);
           BarrierManager::arrive<NumConsumerThreads + NumProducerLoaderThreads>(BwdNamedBarriers::KVEmpty);
         } else {
           epilogue.store_zero_dkv(params.epilogue, threadIdx.x - NumCopyThreads, epilogue_block_coord, det_msg);

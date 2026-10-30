@@ -1441,7 +1441,9 @@ class DistAttnRuntime:
                         dtype=self.hp_dtype,
                         device=k.device,
                     )
-                    partial_dk, partial_dv = self._maybe_chunk(partial_dkv, num_chunks=2)
+                    partial_dk, partial_dv = self._maybe_chunk(
+                        partial_dkv, num_chunks=2
+                    )
 
                 (
                     partial_dq,

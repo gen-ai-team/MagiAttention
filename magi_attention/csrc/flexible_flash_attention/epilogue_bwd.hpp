@@ -165,8 +165,7 @@ struct CollectiveEpilogueBwd {
                                        Int<kBlockN>,
                                        Int<kHeadDimV / AtomLayoutMdKV>>());
   using SmemLayoutdVTMA = decltype(tile_to_shape(SmemLayoutAtomdVTMA{}, select<1, 2>(TileShape_MNK_V{})));
-  using SmemLayoutdVtTMA =
-      decltype(cute::composition(SmemLayoutdVTMA{}, make_layout(make_shape(Int<kHeadDimV>{}, Int<kBlockN>{}), make_stride(Int<kBlockN>{}, _1{}))));
+  using SmemLayoutdVtTMA = decltype(cute::composition(SmemLayoutdVTMA{}, make_layout(make_shape(Int<kHeadDimV>{}, Int<kBlockN>{}), make_stride(Int<kBlockN>{}, _1{}))));
 
   using SmemLayoutAtomdQ = SmemLayoutAtomdQTMA;
   using SmemLayoutdQ = decltype(tile_to_shape(SmemLayoutAtomdQ{}, select<0, 2>(TileShape_MNK{})));
