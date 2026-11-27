@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import weakref
 from typing import Literal, TypeAlias
 
 import torch
@@ -123,6 +124,30 @@ def range_gather_per_row_kernel(
         tl.store(curr_out_ptr + cols, inp, mask=cols < elem_in_last_block)
 
 
+# The row index of a precomputed gather (the comm meta's permutations, fixed per plan) by its
+# ranges tensor: an index_select launches one ATen kernel, where the triton kernel's launch path
+# costs several times its host time on every call.
+_row_index_cache: dict[int, tuple[weakref.ref, torch.Tensor]] = {}
+
+
+def _cached_row_index(
+    ranges: torch.Tensor, cu_range_sizes: torch.Tensor, row_map: torch.Tensor
+) -> torch.Tensor:
+    key = id(ranges)
+    hit = _row_index_cache.get(key)
+    if hit is not None and hit[0]() is ranges:
+        return hit[1]
+    row_map = row_map.long()
+    rows = torch.arange(row_map.numel(), device=ranges.device)
+    index = ranges[row_map, 0].long() + rows - cu_range_sizes[row_map].long()
+
+    def evict(_: "weakref.ref[torch.Tensor]", key: int = key) -> None:
+        _row_index_cache.pop(key, None)
+
+    _row_index_cache[key] = (weakref.ref(ranges, evict), index)
+    return index
+
+
 @nvtx.instrument_nvtx
 def range_gather(
     input: torch.Tensor,
@@ -148,6 +173,21 @@ def range_gather(
     Returns:
         A new tensor containing the gathered values, put into output if provided.
     """
+    # ---   precomputed gather: a cached row index   --- #
+
+    if (
+        dim == 0
+        and kwargs.get("row_map") is not None
+        and kwargs.get("cu_range_sizes") is not None
+        and kwargs.get("total_size") is not None
+        and not torch.compiler.is_compiling()
+    ):
+        index = _cached_row_index(ranges, kwargs["cu_range_sizes"], kwargs["row_map"])
+        if output is None:
+            return input.index_select(0, index)
+        assert output.is_contiguous(), "output must be contiguous when provided"
+        return torch.index_select(input, 0, index, out=output)
+
     # ---   calculate meta   --- #
 
     # Make ranges contiguous

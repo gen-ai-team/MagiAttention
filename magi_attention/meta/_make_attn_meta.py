@@ -50,6 +50,7 @@ def make_attn_meta_from_dispatch_meta(
     cp_group: dist.ProcessGroup,
     cp_mesh: DeviceMesh | None = None,
     head_dim_v: int | None = None,
+    solved: DistAttnSolver | None = None,
 ) -> tuple[CommMeta, CalcMeta, BaseDistAttnSolver]:
     """Make the communication and calculation meta from the dispatch meta
 
@@ -68,6 +69,9 @@ def make_attn_meta_from_dispatch_meta(
 
         cp_group (dist.ProcessGroup): the process group.
         cp_mesh (DeviceMesh, optional): the process mesh. Defaults to ``None``.
+        solved (DistAttnSolver, optional): a static solver already solved for these ranges and
+            dispatch meta without a cp group (``DistAttnPlan``); it gets ``cp_group`` and only
+            makes the metas. Defaults to ``None``.
 
     Returns:
         tuple[CommMeta, CalcMeta, BaseDistAttnSolver]:
@@ -76,7 +80,16 @@ def make_attn_meta_from_dispatch_meta(
 
     # Solve attention
     attn_solver: BaseDistAttnSolver
-    if env.comm.is_qo_comm_enable():
+    if solved is not None:
+        assert not env.comm.is_qo_comm_enable(), "a planned solver is the static one"
+        assert solved.is_solved
+        assert (solved.cp_rank, solved.cp_size) == (
+            dist.get_rank(cp_group),
+            dist.get_world_size(cp_group),
+        ), "the plan was made for another cp rank or size"
+        solved.cp_group, solved.cp_mesh = cp_group, cp_mesh
+        attn_solver = solved
+    elif env.comm.is_qo_comm_enable():
         # NOTE: for now, we use dynamic attn solver when and only when enabling qo comm
         # however, we will unify the static/dynamic attn solver in the future
         attn_solver = DynamicAttnSolver(

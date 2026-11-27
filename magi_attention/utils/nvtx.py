@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from functools import wraps
 from typing import Any, Callable, TypeVar, cast
 
@@ -24,6 +25,16 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 # global var for torch.autograd.profiler.emit_nvtx
 _EMIT_NVTX_CTX: None | torch.autograd.profiler.emit_nvtx = None
+
+# DEVIATION: the NVTX ranges are on only in profile mode (MAGI_ATTENTION_PROFILE_MODE=1, or
+# MAGI_ATTENTION_NVTX=1), read once at import.
+# Reason: a dist-attn fwd+bwd passes ~40 instrumented functions and ~60 ranges, which cost the
+#   host ~0.3 ms per call; under context parallelism in a CPU-bound pipeline that is the step's.
+# Recovery: set either variable before importing magi_attention to get the ranges back.
+NVTX_ENABLED = (
+    os.environ.get("MAGI_ATTENTION_PROFILE_MODE", "0") == "1"
+    or os.environ.get("MAGI_ATTENTION_NVTX", "0") == "1"
+)
 
 
 @torch.library.custom_op("magi_attn::nvtx_range_push", mutates_args=())
@@ -62,6 +73,8 @@ class add_nvtx_event:
         self.enter_name = event_name
 
     def __enter__(self):
+        if not NVTX_ENABLED:
+            return self
         if torch.compiler.is_compiling():
             # NOTE: torch.compile supports neither retrieving the attributes from "self"
             # nor modifying a variable not in the current scope
@@ -72,6 +85,8 @@ class add_nvtx_event:
         return self
 
     def __exit__(self, *excinfo):
+        if not NVTX_ENABLED:
+            return
         if torch.compiler.is_compiling():
             nvtx_range_pop()
         else:
@@ -86,8 +101,11 @@ def instrument_nvtx(func: F) -> F:
         func (Callable): The function to be decorated.
 
     Returns:
-        Callable: The wrapped function that is now being profiled.
+        Callable: The wrapped function that is now being profiled
+            (``func`` itself when the NVTX ranges are off, see ``NVTX_ENABLED``).
     """
+    if not NVTX_ENABLED:
+        return func
 
     @wraps(func)
     def wrapped_fn(*args, **kwargs):

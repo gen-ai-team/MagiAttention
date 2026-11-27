@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import math
 import warnings
 from abc import ABC, abstractmethod
@@ -213,16 +214,31 @@ class DistAttnSolver(BaseDistAttnSolver):
         num_heads_kv: int,
         head_dim: int,
         overlap_config: OverlapConfig,
-        cp_group: dist.ProcessGroup,
+        cp_group: dist.ProcessGroup | None,
         cp_mesh: DeviceMesh | None = None,
         head_dim_v: int | None = None,
+        *,
+        cp_rank: int | None = None,
+        cp_size: int | None = None,
     ):
         assert (
             not env.comm.is_qo_comm_enable()
         ), "QO comm is not supported for this dist-attn solver"
 
-        self.cp_rank = dist.get_rank(cp_group)
-        self.cp_size = dist.get_world_size(cp_group)
+        # Without a cp group (``cp_group=None`` with ``cp_rank`` and ``cp_size``) the solver plans on
+        # the host alone, e.g. ahead of time in another process: 'solve' runs no collective then,
+        # and the group is set before 'make_comm_meta' (see 'DistAttnPlan')
+        if cp_group is None:
+            assert (
+                cp_rank is not None and cp_size is not None
+            ), "a dist-attn solver without a cp group needs cp_rank and cp_size"
+            assert (
+                overlap_config.mode is AttnOverlapMode.STATIC
+            ), "a dist-attn solver without a cp group needs the static overlap mode"
+            self.cp_rank, self.cp_size = cp_rank, cp_size
+        else:
+            self.cp_rank = dist.get_rank(cp_group)
+            self.cp_size = dist.get_world_size(cp_group)
         self.cp_group = cp_group
         self.cp_mesh = cp_mesh
 
@@ -361,6 +377,8 @@ class DistAttnSolver(BaseDistAttnSolver):
             dispatch_meta=dispatch_meta_q,
         )
 
+        self._dispatch_meta_qk = (dispatch_meta_q, dispatch_meta_k)
+
         # Init host / remote q/k ranges global for this rank
         (
             host_q_ranges_global_this_rank,
@@ -432,6 +450,9 @@ class DistAttnSolver(BaseDistAttnSolver):
             attn_mask_type=attn_mask_type,
             dispatch_meta=dispatch_meta,
         )
+        # kept for the other ranks' entries, which this rank derives itself (see
+        # '_init_remote_rank_entry_per_rank_per_stage')
+        self._bucket_per_rank = bucket_per_rank
         bucket_this_rank = bucket_per_rank[self.cp_rank]
 
         return bucket_this_rank
@@ -856,14 +877,35 @@ class DistAttnSolver(BaseDistAttnSolver):
         if self.cp_size == 1:  # cp1 shortcut
             return []  # empty list
 
-        # all gather remote rank entry per stage from each rank
-        remote_rank_entry_per_stage_per_rank = [None] * self.cp_size
+        if env.general.is_solver_all_gather_enable():
+            assert (
+                self.cp_group is not None
+            ), "all-gathering the solver needs a cp group"
+            # all gather remote rank entry per stage from each rank
+            remote_rank_entry_per_stage_per_rank: list[Any] = [None] * self.cp_size
 
-        dist.all_gather_object(
-            remote_rank_entry_per_stage_per_rank,
-            remote_rank_entry_per_stage_this_rank,
-            group=self.cp_group,
-        )
+            dist.all_gather_object(
+                remote_rank_entry_per_stage_per_rank,
+                remote_rank_entry_per_stage_this_rank,
+                group=self.cp_group,
+            )
+        else:
+            # every rank's entries follow from the global dispatch meta and buckets,
+            # so this rank derives the other ranks' ones itself: no collective, no device sync
+            remote_rank_entry_per_stage_per_rank = [
+                remote_rank_entry_per_stage_this_rank
+                if rank == self.cp_rank
+                else self._peer(rank)._remote_rank_entry_per_stage_from_bucket()
+                for rank in range(self.cp_size)
+            ]
+            if env.general.is_sanity_check_enable() and self.cp_group is not None:
+                gathered: list[Any] = [None] * self.cp_size
+                dist.all_gather_object(
+                    gathered, remote_rank_entry_per_stage_this_rank, group=self.cp_group
+                )
+                assert (
+                    gathered == remote_rank_entry_per_stage_per_rank
+                ), "the remote rank entries derived locally differ from the gathered ones"
 
         # check shape to be [cp_size, overlap_degree]
         if env.general.is_sanity_check_enable():
@@ -885,6 +927,40 @@ class DistAttnSolver(BaseDistAttnSolver):
             ), f"{len(remote_rank_entry_per_rank_per_stage)=}, {self.overlap_degree=}, {self.cp_size=}"
 
         return remote_rank_entry_per_rank_per_stage
+
+    def drop_planning_state(self) -> None:
+        """Drop what only 'solve' needs (every rank's buckets, the dispatch meta),
+        to keep a planned solver small to pickle"""
+        for name in ("_bucket_per_rank", "_dispatch_meta_qk"):
+            self.__dict__.pop(name, None)
+
+    def _peer(self, rank: int) -> "DistAttnSolver":
+        """A shallow copy of this solver as cp rank ``rank``: the per-rank steps of 'solve' write
+        per-rank state (overlap chunking, chunk indices), which stays on the copy"""
+        peer = copy.copy(self)
+        peer.cp_rank = rank
+        return peer
+
+    def _remote_rank_entry_per_stage_from_bucket(self) -> list[RemoteRankEntry]:
+        """The per-rank steps of 'solve' for 'self.cp_rank', up to its remote rank entry per stage"""
+        dispatch_meta_q, dispatch_meta_k = self._dispatch_meta_qk
+        bucket = self._bucket_per_rank[self.cp_rank]
+        (
+            host_q_ranges_global,
+            host_k_ranges_global,
+            remote_k_ranges_global,
+        ) = self._init_host_remote_ranges_global_this_rank(
+            dispatch_meta_q=dispatch_meta_q,
+            dispatch_meta_k=dispatch_meta_k,
+            bucket_this_rank=bucket,
+        )
+        host_rank_entry = self._init_host_rank_entry_this_rank(
+            host_q_ranges_global=host_q_ranges_global,
+            host_k_ranges_global=host_k_ranges_global,
+            remote_k_ranges_global=remote_k_ranges_global,
+            attn_calc_slice_global_list=bucket.attn_slices,
+        )
+        return self._init_remote_rank_entry_per_stage_this_rank(host_rank_entry)
 
     @nvtx.instrument_nvtx
     def _calc_cost_pairs_per_chunk(
@@ -1386,7 +1462,8 @@ class DistAttnSolver(BaseDistAttnSolver):
         ]
 
         transfer_info_per_rank_per_stage = self._init_transfer_info_per_rank_per_stage(
-            transfer_info_per_stage_this_rank
+            transfer_info_per_stage_this_rank,
+            remote_rank_entry_per_rank_per_stage,
         )
 
         transfer_table_per_stage = [
@@ -1605,18 +1682,46 @@ class DistAttnSolver(BaseDistAttnSolver):
     def _init_transfer_info_per_rank_per_stage(
         self,
         transfer_info_per_stage_this_rank: list[TransferInfo],
+        remote_rank_entry_per_rank_per_stage: list[list[RemoteRankEntry]],
     ) -> list[list[TransferInfo]]:
         """Initialize transfer info per rank for each stage
         called in 'self._init_transfer_table_per_stage'
         """
 
-        # all gather transfer info per stage from each rank
-        transfer_info_per_stage_per_rank = [None] * self.cp_size
-        dist.all_gather_object(
-            transfer_info_per_stage_per_rank,
-            transfer_info_per_stage_this_rank,
-            group=self.cp_group,
-        )
+        if env.general.is_solver_all_gather_enable():
+            assert (
+                self.cp_group is not None
+            ), "all-gathering the solver needs a cp group"
+            # all gather transfer info per stage from each rank
+            transfer_info_per_stage_per_rank: list[Any] = [None] * self.cp_size
+            dist.all_gather_object(
+                transfer_info_per_stage_per_rank,
+                transfer_info_per_stage_this_rank,
+                group=self.cp_group,
+            )
+        else:
+            # a rank's transfer info follows from every rank's remote entries, which this rank has
+            transfer_info_per_stage_per_rank = [
+                transfer_info_per_stage_this_rank
+                if rank == self.cp_rank
+                else [
+                    self._peer(rank)._init_transfer_info_this_rank_for_one_stage(
+                        remote_rank_entry_per_rank_this_stage
+                    )
+                    for remote_rank_entry_per_rank_this_stage in (
+                        remote_rank_entry_per_rank_per_stage
+                    )
+                ]
+                for rank in range(self.cp_size)
+            ]
+            if env.general.is_sanity_check_enable() and self.cp_group is not None:
+                gathered: list[Any] = [None] * self.cp_size
+                dist.all_gather_object(
+                    gathered, transfer_info_per_stage_this_rank, group=self.cp_group
+                )
+                assert (
+                    gathered == transfer_info_per_stage_per_rank
+                ), "the transfer infos derived locally differ from the gathered ones"
 
         # check shape to be [cp_size, overlap_degree]
         if env.general.is_sanity_check_enable():
