@@ -882,7 +882,7 @@ class DistAttnSolver(BaseDistAttnSolver):
                 self.cp_group is not None
             ), "all-gathering the solver needs a cp group"
             # all gather remote rank entry per stage from each rank
-            remote_rank_entry_per_stage_per_rank = [None] * self.cp_size
+            remote_rank_entry_per_stage_per_rank: list[Any] = [None] * self.cp_size
 
             dist.all_gather_object(
                 remote_rank_entry_per_stage_per_rank,
@@ -1693,7 +1693,7 @@ class DistAttnSolver(BaseDistAttnSolver):
                 self.cp_group is not None
             ), "all-gathering the solver needs a cp group"
             # all gather transfer info per stage from each rank
-            transfer_info_per_stage_per_rank = [None] * self.cp_size
+            transfer_info_per_stage_per_rank: list[Any] = [None] * self.cp_size
             dist.all_gather_object(
                 transfer_info_per_stage_per_rank,
                 transfer_info_per_stage_this_rank,

@@ -140,10 +140,11 @@ def _cached_row_index(
     row_map = row_map.long()
     rows = torch.arange(row_map.numel(), device=ranges.device)
     index = ranges[row_map, 0].long() + rows - cu_range_sizes[row_map].long()
-    _row_index_cache[key] = (
-        weakref.ref(ranges, lambda _, key=key: _row_index_cache.pop(key, None)),
-        index,
-    )
+
+    def evict(_: "weakref.ref[torch.Tensor]", key: int = key) -> None:
+        _row_index_cache.pop(key, None)
+
+    _row_index_cache[key] = (weakref.ref(ranges, evict), index)
     return index
 
 
