@@ -25,11 +25,13 @@ from magi_attention.common import AttnForwardMeta, AttnRanges
 from magi_attention.common.enum import AttnMaskType
 from magi_attention.config import DistAttnConfig
 from magi_attention.dist_attn_runtime_mgr import (
+    DistAttnPlan,
     DistAttnRuntimeDict,
     DistAttnRuntimeKey,
     DistAttnRuntimeMgr,
     init_dist_attn_runtime_key,
     init_dist_attn_runtime_mgr,
+    plan_dist_attn_runtime,
 )
 from magi_attention.utils import wrap_to_list
 from magi_attention.utils.general import ceil_div, is_list_type_all
@@ -439,6 +441,113 @@ def magi_attn_varlen_dispatch(
     return (local_x, key)
 
 
+def _normalize_flex_key_args(
+    q_ranges: AttnRanges,
+    k_ranges: AttnRanges,
+    attn_mask_type: GeneralAttnMaskType,
+    total_seqlen_q: int,
+    total_seqlen_k: int,
+    cp_size: int,
+    dist_attn_config: DistAttnConfig,
+    pad_size: int,
+    chunk_size: int | None,
+) -> tuple[AttnRanges, AttnRanges, list[AttnMaskType], int, int, int, int]:
+    """The ranges, mask types, total seqlens, chunk size and pad size that 'magi_attn_flex_key'
+    and 'magi_attn_flex_plan' key and plan with: validated, chunk size resolved, padded
+    """
+    # Resolve chunk_size: deprecated API parameter vs DispatchConfig
+    dispatch_config = dist_attn_config.dispatch_config
+    if chunk_size is not None:
+        warnings.warn(
+            "The `chunk_size` parameter is deprecated and will be removed in future versions. "
+            "Please pass it via `DispatchConfig(chunk_size=...)` in `dist_attn_config` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if (
+            dispatch_config.chunk_size is not None
+            and dispatch_config.chunk_size != chunk_size
+        ):
+            raise ValueError(
+                f"Conflicting `chunk_size`: got {chunk_size} from the API parameter "
+                f"and {dispatch_config.chunk_size} from `dist_attn_config.dispatch_config`. "
+                f"Please only set it in one place."
+            )
+    else:
+        chunk_size = dispatch_config.chunk_size
+
+    uneven_shard: bool = dispatch_config.uneven_shard
+
+    # Validate total_seqlen
+    assert q_ranges.end <= total_seqlen_q and k_ranges.end <= total_seqlen_k, (
+        f"The maximum endpoint in ranges must be less than total_seqlen, "
+        f"but got {q_ranges.end=} when {total_seqlen_q=}, "
+        f"and got {k_ranges.end=} when {total_seqlen_k=}"
+    )
+
+    # Validate and transform attn_mask_type
+    attn_mask_type = wrap_to_list(attn_mask_type, broadcast_to_length=q_ranges.size)
+    assert is_list_type_all(attn_mask_type, (str, AttnMaskType)), (
+        f"attn_mask_type must be a list of str or AttnMaskType or their mixed combination, "
+        f"but got {attn_mask_type=}"
+    )
+    attn_mask_type = [  # transform str to AttnMaskType, might raise ValueError
+        AttnMaskType(type_name) for type_name in attn_mask_type
+    ]
+    assert len(attn_mask_type) == len(q_ranges), (
+        f"the length of attn_mask_type must be same as q_ranges, "
+        f"but got {len(attn_mask_type)=} and {len(q_ranges)=}"
+    )
+
+    # Resolve chunk_size: when not provided, derive from total_seqlen_q;
+    # when provided, cap it to satisfy min_chunks_per_rank constraint
+    auto_chunk_size = ceil_div(
+        total_seqlen_q, env.general.min_chunks_per_rank() * cp_size
+    )
+    chunk_size = (
+        min(auto_chunk_size, chunk_size) if chunk_size is not None else auto_chunk_size
+    )
+
+    assert ceil_div(total_seqlen_q, chunk_size) >= cp_size, (
+        f"The number of chunks (ceil_div({total_seqlen_q}, {chunk_size}) = "
+        f"{ceil_div(total_seqlen_q, chunk_size)}) must be >= cp_size ({cp_size})."
+    )
+
+    # pad_size is now computed internally; warn if caller provided a value
+    if pad_size != 0:
+        warnings.warn(
+            "The `pad_size` parameter is deprecated and will be removed in future versions. "
+            "It is now computed internally based on the adjusted chunk_size.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    if uneven_shard:
+        pad_size = 0
+    else:
+        pad_size = compute_pad_size(total_seqlen_q, cp_size, chunk_size)
+        if pad_size > 0:
+            q_ranges, k_ranges, attn_mask_type = apply_padding(
+                q_ranges=q_ranges,
+                k_ranges=k_ranges,
+                attn_mask_type=attn_mask_type,
+                total_seqlen=total_seqlen_q,
+                pad_size=pad_size,
+            )
+            total_seqlen_q += pad_size
+            total_seqlen_k += pad_size
+
+    return (
+        q_ranges,
+        k_ranges,
+        attn_mask_type,
+        total_seqlen_q,
+        total_seqlen_k,
+        chunk_size,
+        pad_size,
+    )
+
+
 def magi_attn_flex_key(
     q_ranges: AttnRanges,
     k_ranges: AttnRanges,
@@ -573,50 +682,6 @@ def magi_attn_flex_key(
         >>> total_out = undispatch(local_out, dist_attn_runtime_key)
     """
 
-    # Resolve chunk_size: deprecated API parameter vs DispatchConfig
-    dispatch_config = dist_attn_config.dispatch_config
-    if chunk_size is not None:
-        warnings.warn(
-            "The `chunk_size` parameter is deprecated and will be removed in future versions. "
-            "Please pass it via `DispatchConfig(chunk_size=...)` in `dist_attn_config` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if (
-            dispatch_config.chunk_size is not None
-            and dispatch_config.chunk_size != chunk_size
-        ):
-            raise ValueError(
-                f"Conflicting `chunk_size`: got {chunk_size} from the API parameter "
-                f"and {dispatch_config.chunk_size} from `dist_attn_config.dispatch_config`. "
-                f"Please only set it in one place."
-            )
-    else:
-        chunk_size = dispatch_config.chunk_size
-
-    uneven_shard: bool = dispatch_config.uneven_shard
-
-    # Validate total_seqlen
-    assert q_ranges.end <= total_seqlen_q and k_ranges.end <= total_seqlen_k, (
-        f"The maximum endpoint in ranges must be less than total_seqlen, "
-        f"but got {q_ranges.end=} when {total_seqlen_q=}, "
-        f"and got {k_ranges.end=} when {total_seqlen_k=}"
-    )
-
-    # Validate and transform attn_mask_type
-    attn_mask_type = wrap_to_list(attn_mask_type, broadcast_to_length=q_ranges.size)
-    assert is_list_type_all(attn_mask_type, (str, AttnMaskType)), (
-        f"attn_mask_type must be a list of str or AttnMaskType or their mixed combination, "
-        f"but got {attn_mask_type=}"
-    )
-    attn_mask_type = [  # transform str to AttnMaskType, might raise ValueError
-        AttnMaskType(type_name) for type_name in attn_mask_type
-    ]
-    assert len(attn_mask_type) == len(q_ranges), (
-        f"the length of attn_mask_type must be same as q_ranges, "
-        f"but got {len(attn_mask_type)=} and {len(q_ranges)=}"
-    )
-
     # Validate process group (or device mesh)
     if isinstance(cp_group_or_mesh, dist.ProcessGroup):
         assert not env.comm.is_hierarchical_comm_enable(), (
@@ -639,44 +704,26 @@ def magi_attn_flex_key(
             f"but got {type(cp_group_or_mesh)=}"
         )
 
-    # Resolve chunk_size: when not provided, derive from total_seqlen_q;
-    # when provided, cap it to satisfy min_chunks_per_rank constraint
     cp_size = dist.get_world_size(cp_group)
-    auto_chunk_size = ceil_div(
-        total_seqlen_q, env.general.min_chunks_per_rank() * cp_size
+    (
+        q_ranges,
+        k_ranges,
+        attn_mask_type,
+        total_seqlen_q,
+        total_seqlen_k,
+        chunk_size,
+        pad_size,
+    ) = _normalize_flex_key_args(
+        q_ranges=q_ranges,
+        k_ranges=k_ranges,
+        attn_mask_type=attn_mask_type,
+        total_seqlen_q=total_seqlen_q,
+        total_seqlen_k=total_seqlen_k,
+        cp_size=cp_size,
+        dist_attn_config=dist_attn_config,
+        pad_size=pad_size,
+        chunk_size=chunk_size,
     )
-    chunk_size = (
-        min(auto_chunk_size, chunk_size) if chunk_size is not None else auto_chunk_size
-    )
-
-    assert ceil_div(total_seqlen_q, chunk_size) >= cp_size, (
-        f"The number of chunks (ceil_div({total_seqlen_q}, {chunk_size}) = "
-        f"{ceil_div(total_seqlen_q, chunk_size)}) must be >= cp_size ({cp_size})."
-    )
-
-    # pad_size is now computed internally; warn if caller provided a value
-    if pad_size != 0:
-        warnings.warn(
-            "The `pad_size` parameter is deprecated and will be removed in future versions. "
-            "It is now computed internally based on the adjusted chunk_size.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-    if uneven_shard:
-        pad_size = 0
-    else:
-        pad_size = compute_pad_size(total_seqlen_q, cp_size, chunk_size)
-        if pad_size > 0:
-            q_ranges, k_ranges, attn_mask_type = apply_padding(
-                q_ranges=q_ranges,
-                k_ranges=k_ranges,
-                attn_mask_type=attn_mask_type,
-                total_seqlen=total_seqlen_q,
-                pad_size=pad_size,
-            )
-            total_seqlen_q += pad_size
-            total_seqlen_k += pad_size
 
     # Init dist attn runtime key
     key = init_dist_attn_runtime_key(
@@ -720,6 +767,115 @@ def magi_attn_flex_key(
             head_dim_v=head_dim_v,
         )
 
+    return key
+
+
+def magi_attn_flex_plan(
+    q_ranges: AttnRanges,
+    k_ranges: AttnRanges,
+    attn_mask_type: GeneralAttnMaskType,
+    total_seqlen_q: int,
+    total_seqlen_k: int,
+    num_heads_q: int,
+    num_heads_kv: int,
+    head_dim: int,
+    cp_rank: int,
+    cp_size: int,
+    dist_attn_config: DistAttnConfig = DistAttnConfig(),
+    is_same_source: bool = True,
+    is_q_permutable: bool = True,
+    is_k_permutable: bool = True,
+    head_dim_v: int | None = None,
+) -> DistAttnPlan:
+    """The host side of 'magi_attn_flex_key' for cp rank ``cp_rank`` of ``cp_size``: its dispatch
+    meta and solved solver, made without a cp group, a device or a collective.
+
+    The plan pickles, so it can be made ahead of time in another process (e.g. a dataloader
+    worker); 'magi_attn_flex_key_from_plan' then turns it into the key 'magi_attn_flex_key'
+    makes from the same arguments, at the cost of the comm/calc meta alone.
+    Only the static overlap mode, a 1D cp group and the static solver (no qo comm) are supported.
+    """
+    (
+        q_ranges,
+        k_ranges,
+        attn_mask_type,
+        total_seqlen_q,
+        total_seqlen_k,
+        chunk_size,
+        pad_size,
+    ) = _normalize_flex_key_args(
+        q_ranges=q_ranges,
+        k_ranges=k_ranges,
+        attn_mask_type=attn_mask_type,
+        total_seqlen_q=total_seqlen_q,
+        total_seqlen_k=total_seqlen_k,
+        cp_size=cp_size,
+        dist_attn_config=dist_attn_config,
+        pad_size=0,
+        chunk_size=None,
+    )
+    return plan_dist_attn_runtime(
+        q_ranges=q_ranges,
+        k_ranges=k_ranges,
+        attn_mask_type=attn_mask_type,
+        total_seqlen_q=total_seqlen_q,
+        total_seqlen_k=total_seqlen_k,
+        num_heads_q=num_heads_q,
+        num_heads_kv=num_heads_kv,
+        head_dim=head_dim,
+        pad_size=pad_size,
+        chunk_size=chunk_size,
+        cp_rank=cp_rank,
+        cp_size=cp_size,
+        dist_attn_config=dist_attn_config,
+        is_same_source=is_same_source,
+        is_q_permutable=is_q_permutable,
+        is_k_permutable=is_k_permutable,
+        head_dim_v=head_dim_v,
+    )
+
+
+def magi_attn_flex_key_from_plan(
+    plan: DistAttnPlan, cp_group: dist.ProcessGroup
+) -> DistAttnRuntimeKey:
+    """The key of 'magi_attn_flex_key' for a 'magi_attn_flex_plan' plan, over ``cp_group``
+    (this rank must be the plan's cp rank in it)"""
+    key = init_dist_attn_runtime_key(
+        q_ranges=plan.q_ranges,
+        k_ranges=plan.k_ranges,
+        attn_mask_type=plan.attn_mask_type,
+        total_seqlen_q=plan.total_seqlen_q,
+        total_seqlen_k=plan.total_seqlen_k,
+        num_heads_q=plan.num_heads_q,
+        num_heads_kv=plan.num_heads_kv,
+        head_dim=plan.head_dim,
+        pad_size=plan.pad_size,
+        chunk_size=plan.chunk_size,
+        cp_group=cp_group,
+        cp_mesh=None,
+        dist_attn_config=plan.dist_attn_config,
+        head_dim_v=plan.head_dim_v,
+    )
+    if key not in dist_attn_runtime_dict_mgr:
+        dist_attn_runtime_dict_mgr[key] = init_dist_attn_runtime_mgr(
+            q_ranges=plan.q_ranges,
+            k_ranges=plan.k_ranges,
+            attn_mask_type=plan.attn_mask_type,
+            total_seqlen_q=plan.total_seqlen_q,
+            total_seqlen_k=plan.total_seqlen_k,
+            num_heads_q=plan.num_heads_q,
+            num_heads_kv=plan.num_heads_kv,
+            head_dim=plan.head_dim,
+            chunk_size=plan.chunk_size,
+            cp_group=cp_group,
+            cp_mesh=None,
+            dist_attn_config=plan.dist_attn_config,
+            is_same_source=plan.is_same_source,
+            is_q_permutable=plan.is_q_permutable,
+            is_k_permutable=plan.is_k_permutable,
+            head_dim_v=plan.head_dim_v,
+            plan=plan,
+        )
     return key
 
 

@@ -65,6 +65,20 @@ else:
     _torch_custom_op_wrapper = noop_custom_op_wrapper
     _torch_register_fake_wrapper = noop_register_fake_wrapper
 
+
+def _eager_or_custom_op(op):
+    """The op's own function in eager mode, the custom op under torch.compile.
+
+    The custom op exists for torch.compile, which needs its schema and fake impl. In eager mode
+    its dispatch (autograd, ADInplaceOrView and backend redispatch) costs more host time per call
+    than the rest of the launch, and the FFA autograd lives in the callers' autograd functions
+    anyway, so eager calls go to the function directly: same kernel, same arguments.
+    """
+    if torch.compiler.is_compiling():
+        return op
+    return getattr(op, "_init_fn", op)
+
+
 # sparse_k_block_size is a compile-time constant for JIT kernel selection.
 # Passed via module-level var to avoid adding it to the custom_op schema
 # (PyTorch custom_op has issues with extra int params shifting mutated tensor indices).
@@ -424,7 +438,7 @@ def _flex_flash_attn_forward(
     if not torch.compiler.is_compiling():
         global _ffa_sparse_k_block_size
         _ffa_sparse_k_block_size = sparse_k_block_size
-    _flex_flash_attn_forward_compilable(
+    _eager_or_custom_op(_flex_flash_attn_forward_compilable)(
         q=q,
         k=k,
         v=v,
@@ -733,7 +747,7 @@ def _flex_flash_attn_backward(
     if not torch.compiler.is_compiling():
         global _ffa_sparse_k_block_size
         _ffa_sparse_k_block_size = sparse_k_block_size
-    _flex_flash_attn_backward_compilable(
+    _eager_or_custom_op(_flex_flash_attn_backward_compilable)(
         dout=dout,
         q=q,
         k=k,

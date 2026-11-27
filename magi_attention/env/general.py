@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 __all__ = [
     "log_level",
     "is_sanity_check_enable",
+    "is_solver_all_gather_enable",
     "is_flatten_head_groups_enable",
     "kernel_backend",
     "precision",
@@ -82,6 +83,17 @@ def is_sanity_check_enable() -> bool:
     since the extra sanity-check overhead might be non-negligible
     """
     return os.environ.get("MAGI_ATTENTION_SANITY_CHECK", "0") == "1"
+
+
+def is_solver_all_gather_enable() -> bool:
+    """
+    Toggle this env variable to ``1`` to let the dist-attn solver all-gather the remote rank
+    entries and transfer infos over the cp group, as upstream does
+
+    Default value is ``0``: each rank derives the other ranks' ones itself from the global
+    dispatch meta, which they all share, so the solver runs no collective and no device sync
+    """
+    return os.environ.get("MAGI_ATTENTION_SOLVER_ALL_GATHER", "0") == "1"
 
 
 def is_flatten_head_groups_enable() -> bool:

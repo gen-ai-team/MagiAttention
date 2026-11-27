@@ -828,8 +828,20 @@ def _snapshot_env() -> tuple[tuple[str, str], ...]:
     sees different keys when env vars change between calls.
     Any new env var with the prefix automatically invalidates the cache.
     """
+    data = getattr(os.environ, "_data", None)
+    if data is None:  # pragma: no cover  (not CPython's os.environ)
+        return tuple(
+            sorted((k, v) for k, v in os.environ.items() if k.startswith(_ENV_PREFIX))
+        )
+    # os.environ.items() decodes every variable on each launch; match the encoded keys instead
+    # and decode only ours
+    prefix = os.environ.encodekey(_ENV_PREFIX)
     return tuple(
-        sorted((k, v) for k, v in os.environ.items() if k.startswith(_ENV_PREFIX))
+        sorted(
+            (os.environ.decodekey(k), os.environ.decodevalue(v))
+            for k, v in list(data.items())
+            if k.startswith(prefix)
+        )
     )
 
 

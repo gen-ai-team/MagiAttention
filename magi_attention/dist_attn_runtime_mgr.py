@@ -555,6 +555,122 @@ def init_grpcoll_buffer_mgr(
         )
 
 
+@dataclass
+class DistAttnPlan:
+    """The host side of a dist-attn runtime for one cp rank, made without a cp group
+    ('plan_dist_attn_runtime'): the dispatch meta and the solved static solver.
+
+    It needs no device and no collective, so it can be made ahead of time in another process
+    (e.g. a dataloader worker) and pickled; 'init_dist_attn_runtime_mgr(..., plan=...)' then
+    only makes the comm/calc meta and the runtime over the cp group.
+    """
+
+    q_ranges: AttnRanges
+    k_ranges: AttnRanges
+    attn_mask_type: list[AttnMaskType]
+    total_seqlen_q: int
+    total_seqlen_k: int
+    num_heads_q: int
+    num_heads_kv: int
+    head_dim: int
+    head_dim_v: int | None
+    pad_size: int
+    chunk_size: int
+    dist_attn_config: DistAttnConfig
+    is_same_source: bool
+    is_q_permutable: bool
+    is_k_permutable: bool
+    cp_rank: int
+    cp_size: int
+    dispatch_meta_q: DispatchMeta
+    dispatch_meta_k: DispatchMeta
+    attn_solver: DistAttnSolver
+
+
+def plan_dist_attn_runtime(
+    q_ranges: AttnRanges,
+    k_ranges: AttnRanges,
+    attn_mask_type: list[AttnMaskType],
+    total_seqlen_q: int,
+    total_seqlen_k: int,
+    num_heads_q: int,
+    num_heads_kv: int,
+    head_dim: int,
+    pad_size: int,
+    chunk_size: int,
+    cp_rank: int,
+    cp_size: int,
+    dist_attn_config: DistAttnConfig = DistAttnConfig(),
+    is_same_source: bool = True,
+    is_q_permutable: bool = True,
+    is_k_permutable: bool = True,
+    head_dim_v: int | None = None,
+) -> DistAttnPlan:
+    """The dispatch meta and the solved solver of 'init_dist_attn_runtime_mgr' for cp rank
+    ``cp_rank`` of ``cp_size``, on the host alone (see 'DistAttnPlan')"""
+    assert not env.comm.is_qo_comm_enable(), "planning ahead needs the static solver"
+    assert (
+        not env.comm.is_hierarchical_comm_enable()
+    ), "planning ahead needs a 1D cp group"
+    if head_dim_v == head_dim:
+        head_dim_v = None
+    dispatch_meta_q, dispatch_meta_k = make_dispatch_meta_from_qk_ranges(
+        q_ranges=q_ranges,
+        k_ranges=k_ranges,
+        attn_mask_type=attn_mask_type,
+        total_seqlen_q=total_seqlen_q,
+        total_seqlen_k=total_seqlen_k,
+        chunk_size=chunk_size,
+        cp_size=cp_size,
+        cp_rank=cp_rank,
+        dispatch_config=dist_attn_config.dispatch_config,
+        is_same_source=is_same_source,
+        is_q_permutable=is_q_permutable,
+        is_k_permutable=is_k_permutable,
+        uneven_shard=dist_attn_config.dispatch_config.uneven_shard,
+    )
+    attn_solver = DistAttnSolver(
+        num_heads_q=num_heads_q,
+        num_heads_kv=num_heads_kv,
+        head_dim=head_dim,
+        overlap_config=dist_attn_config.overlap_config,
+        cp_group=None,
+        head_dim_v=head_dim_v,
+        cp_rank=cp_rank,
+        cp_size=cp_size,
+    )
+    attn_solver.solve(
+        q_ranges=q_ranges,
+        k_ranges=k_ranges,
+        attn_mask_type=attn_mask_type,
+        dispatch_meta_q=dispatch_meta_q,
+        dispatch_meta_k=dispatch_meta_k,
+    )
+    attn_solver.drop_planning_state()
+    return DistAttnPlan(
+        q_ranges=q_ranges,
+        k_ranges=k_ranges,
+        attn_mask_type=list(attn_mask_type),
+        total_seqlen_q=total_seqlen_q,
+        total_seqlen_k=total_seqlen_k,
+        num_heads_q=num_heads_q,
+        num_heads_kv=num_heads_kv,
+        head_dim=head_dim,
+        head_dim_v=head_dim_v,
+        pad_size=pad_size,
+        chunk_size=chunk_size,
+        dist_attn_config=dist_attn_config,
+        is_same_source=is_same_source,
+        is_q_permutable=is_q_permutable,
+        is_k_permutable=is_k_permutable,
+        cp_rank=cp_rank,
+        cp_size=cp_size,
+        dispatch_meta_q=dispatch_meta_q,
+        dispatch_meta_k=dispatch_meta_k,
+        attn_solver=attn_solver,
+    )
+
+
 def init_dist_attn_runtime_mgr(
     q_ranges: AttnRanges,
     k_ranges: AttnRanges,
@@ -574,6 +690,7 @@ def init_dist_attn_runtime_mgr(
     ref_dispatch_meta_q: DispatchMeta | None = None,
     ref_dispatch_meta_k: DispatchMeta | None = None,
     head_dim_v: int | None = None,
+    plan: "DistAttnPlan | None" = None,
 ) -> DistAttnRuntimeMgr:
     """
 
@@ -669,6 +786,16 @@ def init_dist_attn_runtime_mgr(
 
     cp_size = dist.get_world_size(cp_group)
     cp_rank = dist.get_rank(cp_group)
+    if plan is not None:
+        # the dispatch meta and the solved solver of 'plan_dist_attn_runtime'
+        assert (plan.cp_rank, plan.cp_size) == (cp_rank, cp_size), (
+            f"the plan is for cp rank {plan.cp_rank} of {plan.cp_size}, "
+            f"not {cp_rank} of {cp_size}"
+        )
+        ref_dispatch_meta_q, ref_dispatch_meta_k = (
+            plan.dispatch_meta_q,
+            plan.dispatch_meta_k,
+        )
 
     logger.info(
         "============================================================\n"
@@ -874,6 +1001,7 @@ def init_dist_attn_runtime_mgr(
         cp_group=cp_group,
         cp_mesh=cp_mesh,
         head_dim_v=head_dim_v,
+        solved=plan.attn_solver if plan is not None else None,
     )
 
     logger.info(

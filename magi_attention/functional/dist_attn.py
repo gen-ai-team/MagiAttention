@@ -1246,10 +1246,14 @@ class DistAttnRuntime:
                 _backend != MagiAttentionKernelBackend.FA4
             ), "FA4 backend does not support return max logits"
         with nvtx.add_nvtx_event(
-            f"attn-fwd: "
-            f"{attn_arg.total_area=} | "
-            f"{attn_arg.q_ranges=} | "
-            f"{attn_arg.k_ranges=}"
+            (
+                f"attn-fwd: "
+                f"{attn_arg.total_area=} | "
+                f"{attn_arg.q_ranges=} | "
+                f"{attn_arg.k_ranges=}"
+            )
+            if env.general.is_profile_mode_enable()
+            else "attn-fwd"
         ):
             if _backend == MagiAttentionKernelBackend.SDPA_OL:
                 partial_out, meta = sdpa_online_fwd(
@@ -1352,10 +1356,14 @@ class DistAttnRuntime:
     ) -> tuple[torch.Tensor, FusedOrTupleTensor, torch.Tensor | None]:
         _backend = self.kernel_backend
         with nvtx.add_nvtx_event(
-            f"attn-bwd: "
-            f"{attn_arg.total_area=} | "
-            f"{attn_arg.q_ranges=} | "
-            f"{attn_arg.k_ranges=}"
+            (
+                f"attn-bwd: "
+                f"{attn_arg.total_area=} | "
+                f"{attn_arg.q_ranges=} | "
+                f"{attn_arg.k_ranges=}"
+            )
+            if env.general.is_profile_mode_enable()
+            else "attn-bwd"
         ):
             if _backend == MagiAttentionKernelBackend.SDPA_OL:
                 partial_dq, partial_dk, partial_dv, partial_dsink = sdpa_online_bwd(

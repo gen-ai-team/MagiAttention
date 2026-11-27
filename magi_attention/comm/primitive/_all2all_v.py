@@ -72,12 +72,24 @@ def all2all_v(
             which will wait for the comm kernel done and the output ready
     """
 
-    assert (
-        len(input_split_size_list)
-        == len(output_split_size_list)
-        == dist.get_world_size(group)
-    )
+    world_size = group.size()
+    assert len(input_split_size_list) == len(output_split_size_list) == world_size
     assert input.stride() == output.stride()
+
+    if not nvtx.NVTX_ENABLED:
+        # DEVIATION: straight to the process group, without dist.all_to_all_single's Python
+        # wrappers (c10d logging, group and rank lookups, argument checks) or the NVTX label.
+        # Reason: ~0.1 ms of host time per call, three calls per dist-attn fwd+bwd.
+        # Recovery: the NVTX path below keeps the original call.
+        opts = dist.AllToAllOptions()
+        opts.asyncOp = async_op
+        work_nccl = group.alltoall_base(
+            output, input, output_split_size_list, input_split_size_list, opts
+        )
+        if not async_op:
+            work_nccl.wait()
+            work_nccl = None
+        return GeneralWork(work=work_nccl)
 
     a2av_comm_bytes = _calc_a2v_comm_bytes(
         input_split_size_list=input_split_size_list,
